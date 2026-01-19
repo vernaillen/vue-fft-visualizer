@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+
 /**
  * FFT Visualizer - High-performance WebGL spectrum analyzer
  *

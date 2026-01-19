@@ -8,9 +8,9 @@
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/vue-fft-visualizer.js",
-      "require": "./dist/vue-fft-visualizer.umd.cjs",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/vue-fft-visualizer.umd.cjs"
     }
   },
   "files": [
@@ -52,5 +52,6 @@
   "bugs": {
     "url": "https://github.com/wvernaillen/vue-fft-visualizer/issues"
   },
-  "homepage": "https://github.com/wvernaillen/vue-fft-visualizer#readme"
+  "homepage": "https://github.com/wvernaillen/vue-fft-visualizer#readme",
+  "packageManager": "pnpm@10.28.0+sha256.9b0b04e6e79945566917f8411bb6f65fd2f3e1590426904e8500e1acc4b33561"
 }
