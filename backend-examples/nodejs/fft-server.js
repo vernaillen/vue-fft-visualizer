@@ -2,14 +2,15 @@
 /**
  * FFT WebSocket Server - Node.js Example
  *
- * Captures audio from system input, computes FFT, and streams frequency
- * data to WebSocket clients for visualization.
+ * Captures audio from system input using ffmpeg, computes FFT, and streams
+ * frequency data to WebSocket clients for visualization.
  *
  * Requirements:
- *     npm install ws fft.js naudiodon
+ *     npm install ws fft.js
+ *     ffmpeg must be installed (brew install ffmpeg)
  *
  * Usage:
- *     node fft-server.js [--port 3001] [--device 0]
+ *     node fft-server.js [--port 3001] [--device "default"]
  *
  * Protocol:
  *     1. Client connects to ws://host:port/
@@ -19,7 +20,7 @@
 
 const { WebSocketServer } = require('ws')
 const FFT = require('fft.js')
-const portAudio = require('naudiodon')
+const { spawn } = require('child_process')
 
 // Configuration
 const SAMPLE_RATE = 48000
@@ -35,12 +36,12 @@ const args = process.argv.slice(2)
 const portIndex = args.indexOf('--port')
 const deviceIndex = args.indexOf('--device')
 const PORT = portIndex !== -1 ? parseInt(args[portIndex + 1]) : 3001
-const DEVICE_ID = deviceIndex !== -1 ? parseInt(args[deviceIndex + 1]) : -1
+const DEVICE = deviceIndex !== -1 ? args[deviceIndex + 1] : ':0' // macOS default audio input
 
 class FFTServer {
   constructor() {
     this.clients = new Set()
-    this.audioInput = null
+    this.ffmpegProcess = null
     this.fft = new FFT(FFT_SIZE)
     this.fftBuffer = new Float32Array(FFT_SIZE)
     this.fftBufferPos = 0
@@ -115,14 +116,14 @@ class FFTServer {
     }
 
     // Convert stereo int16 to mono float
-    const numFrames = samples.length / (CHANNELS * 2) // 2 bytes per sample
-    const view = new DataView(samples.buffer, samples.byteOffset, samples.byteLength)
+    const numFrames = Math.floor(samples.length / (CHANNELS * 2)) // 2 bytes per sample
 
     for (let i = 0; i < numFrames && this.fftBufferPos < FFT_SIZE; i++) {
       let sum = 0
       for (let ch = 0; ch < CHANNELS; ch++) {
         const offset = (i * CHANNELS + ch) * 2
-        sum += view.getInt16(offset, true) / 32768.0
+        const sample = samples.readInt16LE(offset)
+        sum += sample / 32768.0
       }
       this.fftBuffer[this.fftBufferPos++] = sum / CHANNELS
     }
@@ -190,47 +191,75 @@ class FFTServer {
   }
 
   startAudioCapture() {
-    console.log('Starting audio capture...')
+    console.log('Starting audio capture with ffmpeg...')
+    console.log(`Using device: ${DEVICE}`)
 
-    const devices = portAudio.getDevices()
-    console.log('Available audio devices:')
-    devices.forEach((d, i) => {
-      if (d.maxInputChannels > 0) {
-        console.log(`  [${i}] ${d.name} (${d.maxInputChannels} in)`)
-      }
-    })
+    // Detect platform and set appropriate ffmpeg input
+    const platform = process.platform
+    let inputArgs
 
-    const deviceId = DEVICE_ID >= 0 ? DEVICE_ID : portAudio.getDefaultInputDevice().id
+    if (platform === 'darwin') {
+      // macOS: use avfoundation
+      // ":0" means default audio input device
+      // "0:0" would be video:audio from first devices
+      inputArgs = ['-f', 'avfoundation', '-i', DEVICE]
+    } else if (platform === 'linux') {
+      // Linux: use pulseaudio or alsa
+      inputArgs = ['-f', 'pulse', '-i', 'default']
+    } else if (platform === 'win32') {
+      // Windows: use dshow
+      inputArgs = ['-f', 'dshow', '-i', 'audio=virtual-audio-capturer']
+    } else {
+      console.error(`Unsupported platform: ${platform}`)
+      return
+    }
 
-    this.audioInput = new portAudio.AudioIO({
-      inOptions: {
-        channelCount: CHANNELS,
-        sampleFormat: portAudio.SampleFormat16Bit,
-        sampleRate: SAMPLE_RATE,
-        deviceId: deviceId,
-        framesPerBuffer: 256
-      }
-    })
+    // ffmpeg command to capture audio and output raw PCM
+    const ffmpegArgs = [
+      ...inputArgs,
+      '-ac', String(CHANNELS),           // channels
+      '-ar', String(SAMPLE_RATE),        // sample rate
+      '-f', 's16le',                     // output format: signed 16-bit little-endian
+      '-acodec', 'pcm_s16le',            // codec
+      '-loglevel', 'error',              // reduce noise
+      'pipe:1'                           // output to stdout
+    ]
 
-    this.audioInput.on('data', (data) => {
+    console.log(`Running: ffmpeg ${ffmpegArgs.join(' ')}`)
+
+    this.ffmpegProcess = spawn('ffmpeg', ffmpegArgs)
+
+    this.ffmpegProcess.stdout.on('data', (data) => {
       const fftData = this.computeFFT(data)
       if (fftData) {
         this.broadcast(fftData)
       }
     })
 
-    this.audioInput.on('error', (err) => {
-      console.error('Audio error:', err)
+    this.ffmpegProcess.stderr.on('data', (data) => {
+      const msg = data.toString().trim()
+      if (msg) {
+        console.error('ffmpeg:', msg)
+      }
     })
 
-    this.audioInput.start()
-    console.log(`Audio capture started on device ${deviceId}`)
+    this.ffmpegProcess.on('error', (err) => {
+      console.error('Failed to start ffmpeg:', err.message)
+      console.error('Make sure ffmpeg is installed: brew install ffmpeg')
+    })
+
+    this.ffmpegProcess.on('close', (code) => {
+      console.log(`ffmpeg exited with code ${code}`)
+      this.ffmpegProcess = null
+    })
+
+    console.log('Audio capture started')
   }
 
   stopAudioCapture() {
-    if (this.audioInput) {
-      this.audioInput.quit()
-      this.audioInput = null
+    if (this.ffmpegProcess) {
+      this.ffmpegProcess.kill('SIGTERM')
+      this.ffmpegProcess = null
       console.log('Audio capture stopped')
     }
   }
@@ -284,7 +313,7 @@ class FFTServer {
 
     // Handle shutdown
     process.on('SIGINT', () => {
-      console.log('Shutting down...')
+      console.log('\nShutting down...')
       this.stopAudioCapture()
       wss.close()
       process.exit(0)
