@@ -11,8 +11,10 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/vue-fft-visualizer.js",
       "require": "./dist/vue-fft-visualizer.umd.cjs"
-    }
+    },
+    "./style.css": "./dist/vue-fft-visualizer.css"
   },
+  "style": "./dist/vue-fft-visualizer.css",
   "files": [
     "dist"
   ],
