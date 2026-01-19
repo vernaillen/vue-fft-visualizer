@@ -26,6 +26,8 @@ const props = withDefaults(defineProps<{
   ledBars?: boolean
   /** Bar color gradient - array of {stop, color} or preset name */
   gradient?: 'classic' | 'rainbow' | 'blue' | Array<{stop: number, color: string}>
+  /** Gradient direction: vertical (within each bar) or horizontal (across all bars) */
+  gradientDirection?: 'vertical' | 'horizontal'
   /** Noise floor threshold (0-255) - values below this are suppressed */
   noiseFloor?: number
   /** Temporal smoothing factor (0 = no smoothing, 0.9 = heavy smoothing) */
@@ -36,6 +38,7 @@ const props = withDefaults(defineProps<{
   bands: 80,
   ledBars: false,
   gradient: 'classic',
+  gradientDirection: 'vertical',
   noiseFloor: 0,
   smoothing: 0
 })
@@ -119,6 +122,7 @@ let uBinsLoc: WebGLUniformLocation | null = null
 let uShowPeaksLoc: WebGLUniformLocation | null = null
 let uLedBarsLoc: WebGLUniformLocation | null = null
 let uGradientLoc: WebGLUniformLocation | null = null
+let uGradientHorizontalLoc: WebGLUniformLocation | null = null
 let uFftDataLoc: WebGLUniformLocation | null = null
 let uPeakDataLoc: WebGLUniformLocation | null = null
 
@@ -137,6 +141,7 @@ const fragmentShaderSource = `
   uniform bool u_showPeaks;
   uniform bool u_ledBars;
   uniform int u_gradient;
+  uniform bool u_gradientHorizontal;
   uniform sampler2D u_fftData;
   uniform sampler2D u_peakData;
 
@@ -210,7 +215,8 @@ const fragmentShaderSource = `
       if (inLedGap) {
         gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
       } else {
-        vec3 color = getGradientColor(uv.y);
+        float gradientPos = u_gradientHorizontal ? uv.x : uv.y;
+        vec3 color = getGradientColor(gradientPos);
         gl_FragColor = vec4(color, 1.0);
       }
     } else if (u_showPeaks && uv.y >= peakValue - 0.003 && uv.y <= peakValue + 0.003) {
@@ -304,6 +310,7 @@ function initWebGL(): boolean {
   uShowPeaksLoc = gl.getUniformLocation(program, 'u_showPeaks')
   uLedBarsLoc = gl.getUniformLocation(program, 'u_ledBars')
   uGradientLoc = gl.getUniformLocation(program, 'u_gradient')
+  uGradientHorizontalLoc = gl.getUniformLocation(program, 'u_gradientHorizontal')
   uFftDataLoc = gl.getUniformLocation(program, 'u_fftData')
   uPeakDataLoc = gl.getUniformLocation(program, 'u_peakData')
 
@@ -503,6 +510,7 @@ function drawSpectrum() {
   gl.uniform1i(uLedBarsLoc, props.ledBars ? 1 : 0)
   const gradientIndex = props.gradient === 'rainbow' ? 1 : props.gradient === 'blue' ? 2 : 0
   gl.uniform1i(uGradientLoc, gradientIndex)
+  gl.uniform1i(uGradientHorizontalLoc, props.gradientDirection === 'horizontal' ? 1 : 0)
 
   // Draw
   gl.viewport(0, 0, canvas.width, canvas.height)

@@ -10,6 +10,7 @@ const noiseFloor = ref(40)
 const smoothing = ref(0.5)
 const peakDecay = ref(0.99)
 const gradient = ref<'classic' | 'rainbow' | 'blue'>('classic')
+const gradientDirection = ref<'vertical' | 'horizontal'>('vertical')
 
 // WebSocket URL - connect to the Rust backend
 const wsUrl = ref('ws://localhost:3001')
@@ -32,6 +33,7 @@ const wsUrl = ref('ws://localhost:3001')
         :smoothing="smoothing"
         :peak-decay="peakDecay"
         :gradient="gradient"
+        :gradient-direction="gradientDirection"
       />
     </div>
 
@@ -81,6 +83,14 @@ const wsUrl = ref('ws://localhost:3001')
           <option value="classic">Classic</option>
           <option value="rainbow">Rainbow</option>
           <option value="blue">Blue</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label>Direction</label>
+        <select v-model="gradientDirection">
+          <option value="vertical">Vertical</option>
+          <option value="horizontal">Horizontal</option>
         </select>
       </div>
     </div>
