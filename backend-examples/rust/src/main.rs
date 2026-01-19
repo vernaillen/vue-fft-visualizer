@@ -37,6 +37,14 @@ const FFT_END_FREQ: f32 = 18000.0;
 struct Args {
     #[arg(short, long, default_value_t = 3001)]
     port: u16,
+
+    /// Audio input device name (substring match). Use --list-devices to see available devices.
+    #[arg(short, long)]
+    device: Option<String>,
+
+    /// List available audio input devices and exit
+    #[arg(long)]
+    list_devices: bool,
 }
 
 #[derive(Serialize)]
