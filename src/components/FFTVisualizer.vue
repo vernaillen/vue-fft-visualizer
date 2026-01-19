@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, toRefs } from 'vue'
 
 /**
  * FFT Visualizer - High-performance WebGL spectrum analyzer
@@ -147,21 +147,36 @@ const fragmentShaderSource = `
 
   vec3 getGradientColor(float t) {
     if (u_gradient == 1) {
-      // Rainbow: purple -> blue -> cyan -> green -> yellow -> red
-      float h = t * 0.8; // Use 80% of hue range
-      float s = 1.0;
-      float v = 1.0;
-      float c = v * s;
-      float x = c * (1.0 - abs(mod(h * 6.0, 2.0) - 1.0));
-      float m = v - c;
-      vec3 rgb;
-      if (h < 1.0/6.0) rgb = vec3(c, x, 0.0);
-      else if (h < 2.0/6.0) rgb = vec3(x, c, 0.0);
-      else if (h < 3.0/6.0) rgb = vec3(0.0, c, x);
-      else if (h < 4.0/6.0) rgb = vec3(0.0, x, c);
-      else if (h < 5.0/6.0) rgb = vec3(x, 0.0, c);
-      else rgb = vec3(c, 0.0, x);
-      return rgb + m;
+      // Soft rainbow (prism style, similar to audiomotion-analyzer)
+      // Colors: purple -> pink -> salmon -> orange -> yellow -> lime -> teal -> cyan -> blue -> purple
+      float s = t * 11.0;
+      vec3 c0, c1;
+      float f;
+
+      if (s < 1.0) {
+        c0 = vec3(0.533, 0.067, 0.467); c1 = vec3(0.667, 0.2, 0.333); f = s;
+      } else if (s < 2.0) {
+        c0 = vec3(0.667, 0.2, 0.333); c1 = vec3(0.8, 0.4, 0.4); f = s - 1.0;
+      } else if (s < 3.0) {
+        c0 = vec3(0.8, 0.4, 0.4); c1 = vec3(0.933, 0.6, 0.267); f = s - 2.0;
+      } else if (s < 4.0) {
+        c0 = vec3(0.933, 0.6, 0.267); c1 = vec3(0.933, 0.867, 0.0); f = s - 3.0;
+      } else if (s < 5.0) {
+        c0 = vec3(0.933, 0.867, 0.0); c1 = vec3(0.6, 0.867, 0.333); f = s - 4.0;
+      } else if (s < 6.0) {
+        c0 = vec3(0.6, 0.867, 0.333); c1 = vec3(0.267, 0.867, 0.533); f = s - 5.0;
+      } else if (s < 7.0) {
+        c0 = vec3(0.267, 0.867, 0.533); c1 = vec3(0.133, 0.8, 0.733); f = s - 6.0;
+      } else if (s < 8.0) {
+        c0 = vec3(0.133, 0.8, 0.733); c1 = vec3(0.0, 0.733, 0.8); f = s - 7.0;
+      } else if (s < 9.0) {
+        c0 = vec3(0.0, 0.733, 0.8); c1 = vec3(0.0, 0.6, 0.8); f = s - 8.0;
+      } else if (s < 10.0) {
+        c0 = vec3(0.0, 0.6, 0.8); c1 = vec3(0.2, 0.4, 0.733); f = s - 9.0;
+      } else {
+        c0 = vec3(0.2, 0.4, 0.733); c1 = vec3(0.4, 0.2, 0.6); f = s - 10.0;
+      }
+      return mix(c0, c1, f);
     } else if (u_gradient == 2) {
       // Blue: dark blue -> cyan -> white
       vec3 darkBlue = vec3(0.0, 0.1, 0.4);
@@ -192,8 +207,8 @@ const fragmentShaderSource = `
     float barIndex = floor(uv.x * u_bins);
     float barLocalX = fract(uv.x * u_bins);
 
-    // Gap between bars (10% of bar width)
-    float gap = 0.1;
+    // Gap between bars (25% of bar width)
+    float gap = 0.25;
     if (barLocalX > (1.0 - gap)) {
       gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
       return;
@@ -220,15 +235,18 @@ const fragmentShaderSource = `
         gl_FragColor = vec4(color, 1.0);
       }
     } else if (u_showPeaks && uv.y >= peakValue - 0.003 && uv.y <= peakValue + 0.003) {
+      // Get peak color from gradient (same as bar color at peak position)
+      float peakGradientPos = u_gradientHorizontal ? uv.x : peakValue;
+      vec3 peakColor = getGradientColor(peakGradientPos);
       if (u_ledBars) {
         float peakSegment = floor(peakValue * ledSegments) / ledSegments;
         if (uv.y >= peakSegment && uv.y <= peakSegment + (1.0 / ledSegments) * (1.0 - ledGap)) {
-          gl_FragColor = vec4(1.0, 1.0, 1.0, 0.9);
+          gl_FragColor = vec4(peakColor, 0.5);
         } else {
           gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
         }
       } else {
-        gl_FragColor = vec4(1.0, 1.0, 1.0, 0.8);
+        gl_FragColor = vec4(peakColor, 0.5);
       }
     } else {
       gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
@@ -378,8 +396,8 @@ function connect() {
     if (data instanceof ArrayBuffer) {
       const newData = new Uint8Array(data)
       if (newData.length === serverBins.value) {
-        // Apply noise floor threshold
-        const threshold = props.noiseFloor
+        // Apply noise floor threshold (use internal reactive ref)
+        const threshold = currentNoiseFloor.value
         for (let i = 0; i < newData.length; i++) {
           newData[i] = newData[i]! > threshold ? newData[i]! - threshold : 0
         }
@@ -391,8 +409,8 @@ function connect() {
           }
         }
 
-        // Apply temporal smoothing
-        const smooth = props.smoothing
+        // Apply temporal smoothing (use internal reactive ref)
+        const smooth = currentSmoothing.value
         if (smooth > 0) {
           for (let i = 0; i < newData.length; i++) {
             smoothedFftData.value[i] = smooth * smoothedFftData.value[i]! + (1 - smooth) * newData[i]!
@@ -401,13 +419,13 @@ function connect() {
         }
         fftData.value = newData
 
-        // Update peaks on processed data
+        // Update peaks on processed data (use internal reactive ref for decay)
         for (let i = 0; i < serverBins.value; i++) {
           const value = newData[i]! / 255
           if (value > peakData.value[i]!) {
             peakData.value[i] = value
           } else {
-            peakData.value[i]! *= props.peakDecay
+            peakData.value[i]! *= currentPeakDecay.value
           }
         }
 
@@ -503,14 +521,14 @@ function drawSpectrum() {
     peakUint8
   )
 
-  // Set uniforms
+  // Set uniforms (use internal reactive refs for proper reactivity)
   gl.uniform2f(uResolutionLoc, canvas.width, canvas.height)
   gl.uniform1f(uBinsLoc, numBins)
-  gl.uniform1i(uShowPeaksLoc, props.showPeaks ? 1 : 0)
-  gl.uniform1i(uLedBarsLoc, props.ledBars ? 1 : 0)
-  const gradientIndex = props.gradient === 'rainbow' ? 1 : props.gradient === 'blue' ? 2 : 0
+  gl.uniform1i(uShowPeaksLoc, currentShowPeaks.value ? 1 : 0)
+  gl.uniform1i(uLedBarsLoc, currentLedBars.value ? 1 : 0)
+  const gradientIndex = currentGradient.value === 'rainbow' ? 1 : currentGradient.value === 'blue' ? 2 : 0
   gl.uniform1i(uGradientLoc, gradientIndex)
-  gl.uniform1i(uGradientHorizontalLoc, props.gradientDirection === 'horizontal' ? 1 : 0)
+  gl.uniform1i(uGradientHorizontalLoc, currentGradientDirection.value === 'horizontal' ? 1 : 0)
 
   // Draw
   gl.viewport(0, 0, canvas.width, canvas.height)
@@ -534,6 +552,18 @@ function handleResize() {
     gl.viewport(0, 0, canvas.width, canvas.height)
   }
 }
+
+// Create reactive refs from props using toRefs
+// This ensures props are properly tracked in callbacks
+const {
+  showPeaks: currentShowPeaks,
+  peakDecay: currentPeakDecay,
+  ledBars: currentLedBars,
+  gradient: currentGradient,
+  gradientDirection: currentGradientDirection,
+  noiseFloor: currentNoiseFloor,
+  smoothing: currentSmoothing
+} = toRefs(props)
 
 // Watch for bands prop changes
 watch(() => props.bands, (newBands) => {
