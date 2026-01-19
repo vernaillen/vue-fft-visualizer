@@ -1,0 +1,3 @@
+websockets>=12.0
+numpy>=1.24.0
+pyalsaaudio>=0.10.0

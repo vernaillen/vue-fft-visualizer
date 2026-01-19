@@ -1,0 +1,14 @@
+{
+  "name": "fft-server-nodejs",
+  "version": "1.0.0",
+  "description": "FFT WebSocket server for vue-fft-visualizer",
+  "main": "fft-server.js",
+  "scripts": {
+    "start": "node fft-server.js"
+  },
+  "dependencies": {
+    "fft.js": "^4.0.4",
+    "naudiodon": "^2.3.0",
+    "ws": "^8.16.0"
+  }
+}
