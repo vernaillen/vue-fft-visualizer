@@ -26,12 +26,18 @@ const props = withDefaults(defineProps<{
   ledBars?: boolean
   /** Bar color gradient - array of {stop, color} or preset name */
   gradient?: 'classic' | 'rainbow' | 'blue' | Array<{stop: number, color: string}>
+  /** Noise floor threshold (0-255) - values below this are suppressed */
+  noiseFloor?: number
+  /** Temporal smoothing factor (0 = no smoothing, 0.9 = heavy smoothing) */
+  smoothing?: number
 }>(), {
   showPeaks: true,
   peakDecay: 0.997,
   bands: 80,
   ledBars: false,
-  gradient: 'classic'
+  gradient: 'classic',
+  noiseFloor: 0,
+  smoothing: 0
 })
 
 const emit = defineEmits<{
@@ -49,6 +55,7 @@ const fps = ref(0)
 // FFT data (server sends N bins, we aggregate for display)
 const serverBins = ref(80)
 const fftData = ref<Uint8Array>(new Uint8Array(80))
+const smoothedFftData = ref<Float32Array>(new Float32Array(80))
 const peakData = ref<Float32Array>(new Float32Array(80))
 
 // Display data (aggregated to props.bands)
@@ -111,6 +118,7 @@ let uResolutionLoc: WebGLUniformLocation | null = null
 let uBinsLoc: WebGLUniformLocation | null = null
 let uShowPeaksLoc: WebGLUniformLocation | null = null
 let uLedBarsLoc: WebGLUniformLocation | null = null
+let uGradientLoc: WebGLUniformLocation | null = null
 let uFftDataLoc: WebGLUniformLocation | null = null
 let uPeakDataLoc: WebGLUniformLocation | null = null
 
@@ -128,19 +136,47 @@ const fragmentShaderSource = `
   uniform float u_bins;
   uniform bool u_showPeaks;
   uniform bool u_ledBars;
+  uniform int u_gradient;
   uniform sampler2D u_fftData;
   uniform sampler2D u_peakData;
 
-  // Classic gradient: red -> orange -> yellow
   vec3 getGradientColor(float t) {
-    vec3 red = vec3(0.76, 0.08, 0.0);
-    vec3 orange = vec3(1.0, 0.55, 0.0);
-    vec3 yellow = vec3(1.0, 0.77, 0.0);
-
-    if (t < 0.6) {
-      return mix(red, orange, t / 0.6);
+    if (u_gradient == 1) {
+      // Rainbow: purple -> blue -> cyan -> green -> yellow -> red
+      float h = t * 0.8; // Use 80% of hue range
+      float s = 1.0;
+      float v = 1.0;
+      float c = v * s;
+      float x = c * (1.0 - abs(mod(h * 6.0, 2.0) - 1.0));
+      float m = v - c;
+      vec3 rgb;
+      if (h < 1.0/6.0) rgb = vec3(c, x, 0.0);
+      else if (h < 2.0/6.0) rgb = vec3(x, c, 0.0);
+      else if (h < 3.0/6.0) rgb = vec3(0.0, c, x);
+      else if (h < 4.0/6.0) rgb = vec3(0.0, x, c);
+      else if (h < 5.0/6.0) rgb = vec3(x, 0.0, c);
+      else rgb = vec3(c, 0.0, x);
+      return rgb + m;
+    } else if (u_gradient == 2) {
+      // Blue: dark blue -> cyan -> white
+      vec3 darkBlue = vec3(0.0, 0.1, 0.4);
+      vec3 cyan = vec3(0.0, 0.8, 1.0);
+      vec3 white = vec3(1.0, 1.0, 1.0);
+      if (t < 0.6) {
+        return mix(darkBlue, cyan, t / 0.6);
+      } else {
+        return mix(cyan, white, (t - 0.6) / 0.4);
+      }
     } else {
-      return mix(orange, yellow, (t - 0.6) / 0.4);
+      // Classic: red -> orange -> yellow
+      vec3 red = vec3(0.76, 0.08, 0.0);
+      vec3 orange = vec3(1.0, 0.55, 0.0);
+      vec3 yellow = vec3(1.0, 0.77, 0.0);
+      if (t < 0.6) {
+        return mix(red, orange, t / 0.6);
+      } else {
+        return mix(orange, yellow, (t - 0.6) / 0.4);
+      }
     }
   }
 
@@ -267,6 +303,7 @@ function initWebGL(): boolean {
   uBinsLoc = gl.getUniformLocation(program, 'u_bins')
   uShowPeaksLoc = gl.getUniformLocation(program, 'u_showPeaks')
   uLedBarsLoc = gl.getUniformLocation(program, 'u_ledBars')
+  uGradientLoc = gl.getUniformLocation(program, 'u_gradient')
   uFftDataLoc = gl.getUniformLocation(program, 'u_fftData')
   uPeakDataLoc = gl.getUniformLocation(program, 'u_peakData')
 
@@ -318,6 +355,7 @@ function connect() {
         if (config.type === 'config' && config.mode === 'fft') {
           serverBins.value = config.bins || 80
           fftData.value = new Uint8Array(serverBins.value)
+          smoothedFftData.value = new Float32Array(serverBins.value)
           peakData.value = new Float32Array(serverBins.value)
           displayFftData.value = new Uint8Array(displayBins.value)
           displayPeakData.value = new Float32Array(displayBins.value)
@@ -333,9 +371,30 @@ function connect() {
     if (data instanceof ArrayBuffer) {
       const newData = new Uint8Array(data)
       if (newData.length === serverBins.value) {
+        // Apply noise floor threshold
+        const threshold = props.noiseFloor
+        for (let i = 0; i < newData.length; i++) {
+          newData[i] = newData[i]! > threshold ? newData[i]! - threshold : 0
+        }
+        // Rescale to use full range after threshold
+        if (threshold > 0) {
+          const scale = 255 / (255 - threshold)
+          for (let i = 0; i < newData.length; i++) {
+            newData[i] = Math.min(255, Math.floor(newData[i]! * scale))
+          }
+        }
+
+        // Apply temporal smoothing
+        const smooth = props.smoothing
+        if (smooth > 0) {
+          for (let i = 0; i < newData.length; i++) {
+            smoothedFftData.value[i] = smooth * smoothedFftData.value[i]! + (1 - smooth) * newData[i]!
+            newData[i] = Math.floor(smoothedFftData.value[i]!)
+          }
+        }
         fftData.value = newData
 
-        // Update peaks on raw data
+        // Update peaks on processed data
         for (let i = 0; i < serverBins.value; i++) {
           const value = newData[i]! / 255
           if (value > peakData.value[i]!) {
@@ -442,6 +501,8 @@ function drawSpectrum() {
   gl.uniform1f(uBinsLoc, numBins)
   gl.uniform1i(uShowPeaksLoc, props.showPeaks ? 1 : 0)
   gl.uniform1i(uLedBarsLoc, props.ledBars ? 1 : 0)
+  const gradientIndex = props.gradient === 'rainbow' ? 1 : props.gradient === 'blue' ? 2 : 0
+  gl.uniform1i(uGradientLoc, gradientIndex)
 
   // Draw
   gl.viewport(0, 0, canvas.width, canvas.height)
