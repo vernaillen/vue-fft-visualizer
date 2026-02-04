@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>FFT WebSocket Test</title>
+  <style>
+    body { font-family: monospace; padding: 20px; background: #1a1a1a; color: #0f0; }
+    #log { white-space: pre-wrap; max-height: 80vh; overflow-y: auto; }
+    input { width: 300px; padding: 5px; margin-right: 10px; }
+    button { padding: 5px 15px; }
+  </style>
+</head>
+<body>
+  <h1>FFT WebSocket Debug Client</h1>
+  <div>
+    <input type="text" id="url" value="ws://10.0.2.213:3002" placeholder="WebSocket URL">
+    <button onclick="connect()">Connect</button>
+    <button onclick="disconnect()">Disconnect</button>
+  </div>
+  <hr>
+  <div id="log"></div>
+
+  <script>
+    let ws = null;
+    let frameCount = 0;
+    let lastFpsTime = Date.now();
+    const log = document.getElementById('log');
+
+    function addLog(msg) {
+      const time = new Date().toISOString().split('T')[1].slice(0, 12);
+      log.textContent = `[${time}] ${msg}\n` + log.textContent;
+    }
+
+    function connect() {
+      const url = document.getElementById('url').value;
+      addLog(`Connecting to ${url}...`);
+
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+      addLog(`binaryType set to: ${ws.binaryType}`);
+
+      ws.onopen = () => {
+        addLog('Connected!');
+        lastFpsTime = Date.now();
+        frameCount = 0;
+      };
+
+      ws.onmessage = (event) => {
+        const data = event.data;
+
+        // Check data type
+        addLog(`Received: type=${typeof data}, constructor=${data?.constructor?.name}, byteLength=${data?.byteLength}, length=${data?.length}`);
+
+        if (typeof data === 'string') {
+          addLog(`String message: ${data}`);
+          try {
+            const config = JSON.parse(data);
+            addLog(`Config parsed: bins=${config.bins}, fps=${config.fps}`);
+          } catch (e) {
+            addLog(`Parse error: ${e}`);
+          }
+        } else if (data instanceof ArrayBuffer) {
+          const arr = new Uint8Array(data);
+          frameCount++;
+          addLog(`ArrayBuffer: ${arr.length} bytes, first 5: [${Array.from(arr.slice(0, 5)).join(', ')}]`);
+
+          // FPS counter
+          const now = Date.now();
+          if (now - lastFpsTime >= 1000) {
+            addLog(`>>> FPS: ${frameCount} <<<`);
+            frameCount = 0;
+            lastFpsTime = now;
+          }
+        } else if (data instanceof Blob) {
+          addLog(`WARNING: Received Blob (not ArrayBuffer)! size=${data.size}`);
+          // Try to read the blob
+          data.arrayBuffer().then(ab => {
+            const arr = new Uint8Array(ab);
+            addLog(`Blob converted: ${arr.length} bytes, first 5: [${Array.from(arr.slice(0, 5)).join(', ')}]`);
+          });
+        } else {
+          addLog(`Unknown data type!`);
+        }
+      };
+
+      ws.onerror = (e) => addLog(`Error: ${e}`);
+      ws.onclose = () => addLog('Disconnected');
+    }
+
+    function disconnect() {
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+    }
+  </script>
+</body>
+</html>
