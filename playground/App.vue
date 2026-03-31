@@ -1,30 +1,81 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { FFTVisualizer } from '../src'
 
-// Controls
-const bands = ref<10 | 20 | 40 | 80>(80)
+// FFT Visualizer Controls
+const bands = ref<10 | 20 | 40 | 80>(40)
 const ledBars = ref(false)
 const showPeaks = ref(true)
-const noiseFloor = ref(40)
+const noiseFloor = ref(60)
 const smoothing = ref(0.5)
 const peakDecay = ref(0.99)
-const gradient = ref<'classic' | 'rainbow' | 'blue'>('classic')
-const gradientDirection = ref<'vertical' | 'horizontal'>('vertical')
+const gradient = ref<'classic' | 'rainbow' | 'blue'>('rainbow')
+const gradientDirection = ref<'vertical' | 'horizontal'>('horizontal')
 
-// WebSocket URL - connect to the Rust backend
-const wsUrl = ref('ws://localhost:3001')
+// Mode & WebSocket URL
+const mode = ref<'websocket' | 'local'>('local')
+const wsUrl = ref('ws://10.0.2.213:3002')
+const wsOptions = ['ws://10.0.2.213:3002', 'ws://127.0.0.1:3001']
+
+// Component refs
+const fftRef = ref<InstanceType<typeof FFTVisualizer>>()
+
+// Fullscreen
+const fftContainer = ref<HTMLElement>()
+const fullscreenEl = ref<Element | null>(null)
+
+function toggleFullscreen(el: HTMLElement | undefined) {
+  if (!el) return
+  if (document.fullscreenElement === el) {
+    document.exitFullscreen()
+  } else {
+    el.requestFullscreen()
+  }
+}
+
+function onFullscreenChange() {
+  fullscreenEl.value = document.fullscreenElement
+}
+
+onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
+onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
+
+function toggleConnection() {
+  if (fftRef.value?.isConnected) {
+    fftRef.value?.disconnect()
+  } else {
+    fftRef.value?.connect()
+  }
+}
 </script>
 
 <template>
   <div class="playground">
     <header>
       <h1>FFT Visualizer Playground</h1>
-      <p class="subtitle">Connected to {{ wsUrl }}</p>
+      <div class="source-selector">
+        <label>Mode</label>
+        <select v-model="mode">
+          <option value="local">Local (WASM)</option>
+          <option value="websocket">WebSocket</option>
+        </select>
+        <template v-if="mode === 'websocket'">
+          <select v-model="wsUrl">
+            <option v-for="url in wsOptions" :key="url" :value="url">{{ url }}</option>
+          </select>
+        </template>
+        <button
+          class="connect-btn"
+          :class="{ 'disconnect-btn': fftRef?.isConnected }"
+          @click="toggleConnection"
+        >{{ fftRef?.isConnected ? 'Disconnect' : 'Connect' }}</button>
+      </div>
     </header>
 
-    <div class="visualizer-container">
+    <div ref="fftContainer" class="visualizer-container">
       <FFTVisualizer
+        ref="fftRef"
+        :mode="mode"
         :websocket-url="wsUrl"
         :bands="bands"
         :led-bars="ledBars"
@@ -36,6 +87,11 @@ const wsUrl = ref('ws://localhost:3001')
         :gradient-direction="gradientDirection"
       />
     </div>
+    <button class="fullscreen-btn" @click="toggleFullscreen(fftContainer)">
+      <svg v-if="fullscreenEl !== fftContainer" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6v6m10-10h-6V4m0 6l7-7M3 21l7-7"/></svg>
+      {{ fullscreenEl === fftContainer ? 'Exit Fullscreen' : 'Fullscreen' }}
+    </button>
 
     <div class="controls">
       <div class="control-group">
@@ -106,6 +162,9 @@ const wsUrl = ref('ws://localhost:3001')
 
 header {
   margin-bottom: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 h1 {
@@ -113,16 +172,22 @@ h1 {
   font-weight: 600;
 }
 
-.subtitle {
-  color: #888;
-  font-size: 0.875rem;
+.source-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .visualizer-container {
   height: 300px;
-  margin-bottom: 1.5rem;
+  margin-bottom: 0.5rem;
   border-radius: 8px;
   overflow: hidden;
+}
+
+.visualizer-container:fullscreen {
+  height: 100%;
+  border-radius: 0;
 }
 
 .controls {
@@ -144,7 +209,7 @@ h1 {
   cursor: pointer;
 }
 
-select {
+select, .connect-btn {
   background: #222;
   color: #eee;
   border: 1px solid #444;
@@ -153,8 +218,46 @@ select {
   cursor: pointer;
 }
 
-select:hover {
+select:hover, .connect-btn:hover {
   border-color: #666;
+}
+
+.connect-btn {
+  background: #1a5c2a;
+  border-color: #2a8c3a;
+  padding: 0.5rem 1rem;
+  font-weight: 600;
+}
+
+.connect-btn:hover {
+  background: #238636;
+}
+
+.disconnect-btn {
+  background: #6b2020;
+  border-color: #a03030;
+}
+
+.disconnect-btn:hover {
+  background: #8b3030;
+}
+
+.fullscreen-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: none;
+  color: #888;
+  border: none;
+  padding: 0.25rem 0;
+  margin-bottom: 1rem;
+  font-size: 0.75rem;
+  font-family: monospace;
+  cursor: pointer;
+}
+
+.fullscreen-btn:hover {
+  color: #eee;
 }
 
 input[type="checkbox"] {

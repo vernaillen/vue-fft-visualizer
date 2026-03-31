@@ -3,14 +3,12 @@
   "version": "0.1.0",
   "description": "A high-performance WebGL-based FFT spectrum visualizer component for Vue 3",
   "type": "module",
-  "main": "./dist/vue-fft-visualizer.umd.cjs",
   "module": "./dist/vue-fft-visualizer.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/vue-fft-visualizer.js",
-      "require": "./dist/vue-fft-visualizer.umd.cjs"
+      "import": "./dist/vue-fft-visualizer.js"
     },
     "./style.css": "./dist/vue-fft-visualizer.css"
   },
@@ -20,7 +18,8 @@
   ],
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc && vite build",
+    "build:wasm": "cd wasm && wasm-pack build --target bundler --release",
+    "build": "pnpm build:wasm && vue-tsc && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },
@@ -28,12 +27,14 @@
     "vue": "^3.4.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.0.0",
-    "typescript": "~5.6.0",
-    "vite": "^6.0.0",
+    "@vitejs/plugin-vue": "^6.0.4",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.1",
     "vite-plugin-dts": "^4.0.0",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0",
     "vue": "^3.5.0",
-    "vue-tsc": "^2.0.0"
+    "vue-tsc": "^3.2.4"
   },
   "keywords": [
     "vue",

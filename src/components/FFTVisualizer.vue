@@ -1,21 +1,25 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, toRefs } from 'vue'
+import { useLocalAudio } from '../composables/useLocalAudio'
 
 /**
  * FFT Visualizer - High-performance WebGL spectrum analyzer
  *
- * Receives pre-computed FFT data via WebSocket and renders using WebGL.
- * Supports configurable frequency bands, LED effect, and peak indicators.
+ * Supports two modes:
+ * - 'websocket': Receives pre-computed FFT data via WebSocket (default)
+ * - 'local': Captures audio from microphone and computes FFT in-browser via Rust WASM
  *
- * WebSocket Protocol:
+ * WebSocket Protocol (mode='websocket'):
  * 1. Connect to websocketUrl
  * 2. Server sends config: {"type":"config","mode":"fft","bins":80,"fps":120}
  * 3. Server streams binary: N bytes of uint8 (frequency magnitudes 0-255)
  */
 
 const props = withDefaults(defineProps<{
-  /** WebSocket URL to connect to for FFT data */
-  websocketUrl: string
+  /** Data source mode: 'websocket' for external server, 'local' for browser mic + WASM FFT */
+  mode?: 'websocket' | 'local'
+  /** WebSocket URL (required when mode='websocket') */
+  websocketUrl?: string
   /** Show peak indicators above bars */
   showPeaks?: boolean
   /** Peak decay rate (0.99 = slow decay, 0.9 = fast decay) */
@@ -33,6 +37,7 @@ const props = withDefaults(defineProps<{
   /** Temporal smoothing factor (0 = no smoothing, 0.9 = heavy smoothing) */
   smoothing?: number
 }>(), {
+  mode: 'websocket',
   showPeaks: true,
   peakDecay: 0.997,
   bands: 80,
@@ -102,6 +107,9 @@ function aggregatePeaks(source: Float32Array, targetBands: number): Float32Array
   }
   return result
 }
+
+// Local audio (WASM FFT)
+const localAudio = useLocalAudio({ bins: props.bands })
 
 // WebSocket
 let websocket: WebSocket | null = null
@@ -356,8 +364,50 @@ function initWebGL(): boolean {
   return true
 }
 
-function connect() {
-  if (websocket) return
+// Process raw FFT data: apply noise floor, smoothing, peaks, and aggregate
+function processFFTData(newData: Uint8Array) {
+  // Apply noise floor threshold
+  const threshold = currentNoiseFloor.value
+  for (let i = 0; i < newData.length; i++) {
+    newData[i] = newData[i]! > threshold ? newData[i]! - threshold : 0
+  }
+  // Rescale to use full range after threshold
+  if (threshold > 0) {
+    const scale = 255 / (255 - threshold)
+    for (let i = 0; i < newData.length; i++) {
+      newData[i] = Math.min(255, Math.floor(newData[i]! * scale))
+    }
+  }
+
+  // Apply temporal smoothing
+  const smooth = currentSmoothing.value
+  if (smooth > 0) {
+    for (let i = 0; i < newData.length; i++) {
+      smoothedFftData.value[i] = smooth * smoothedFftData.value[i]! + (1 - smooth) * newData[i]!
+      newData[i] = Math.floor(smoothedFftData.value[i]!)
+    }
+  }
+  fftData.value = newData
+
+  // Update peaks
+  for (let i = 0; i < newData.length; i++) {
+    const value = newData[i]! / 255
+    if (value > peakData.value[i]!) {
+      peakData.value[i] = value
+    } else {
+      peakData.value[i]! *= currentPeakDecay.value
+    }
+  }
+
+  // Aggregate to display bands
+  displayFftData.value = aggregateBins(fftData.value, displayBins.value)
+  displayPeakData.value = aggregatePeaks(peakData.value, displayBins.value)
+
+  frameCount++
+}
+
+function connectWebSocket() {
+  if (websocket || !props.websocketUrl) return
 
   console.log('[FFTVisualizer] Connecting to:', props.websocketUrl)
   websocket = new WebSocket(props.websocketUrl)
@@ -396,44 +446,7 @@ function connect() {
     if (data instanceof ArrayBuffer) {
       const newData = new Uint8Array(data)
       if (newData.length === serverBins.value) {
-        // Apply noise floor threshold (use internal reactive ref)
-        const threshold = currentNoiseFloor.value
-        for (let i = 0; i < newData.length; i++) {
-          newData[i] = newData[i]! > threshold ? newData[i]! - threshold : 0
-        }
-        // Rescale to use full range after threshold
-        if (threshold > 0) {
-          const scale = 255 / (255 - threshold)
-          for (let i = 0; i < newData.length; i++) {
-            newData[i] = Math.min(255, Math.floor(newData[i]! * scale))
-          }
-        }
-
-        // Apply temporal smoothing (use internal reactive ref)
-        const smooth = currentSmoothing.value
-        if (smooth > 0) {
-          for (let i = 0; i < newData.length; i++) {
-            smoothedFftData.value[i] = smooth * smoothedFftData.value[i]! + (1 - smooth) * newData[i]!
-            newData[i] = Math.floor(smoothedFftData.value[i]!)
-          }
-        }
-        fftData.value = newData
-
-        // Update peaks on processed data (use internal reactive ref for decay)
-        for (let i = 0; i < serverBins.value; i++) {
-          const value = newData[i]! / 255
-          if (value > peakData.value[i]!) {
-            peakData.value[i] = value
-          } else {
-            peakData.value[i]! *= currentPeakDecay.value
-          }
-        }
-
-        // Aggregate to display bands
-        displayFftData.value = aggregateBins(fftData.value, displayBins.value)
-        displayPeakData.value = aggregatePeaks(peakData.value, displayBins.value)
-
-        frameCount++
+        processFFTData(newData)
       }
     }
   }
@@ -452,13 +465,52 @@ function connect() {
   }
 }
 
-function disconnect() {
+function disconnectWebSocket() {
   if (websocket) {
+    websocket.onopen = null
+    websocket.onmessage = null
+    websocket.onerror = null
+    websocket.onclose = null
     websocket.close()
     websocket = null
   }
   stopRendering()
   isConnected.value = false
+}
+
+async function startLocalAudio() {
+  try {
+    await localAudio.start()
+    isConnected.value = true
+    emit('connected')
+    startRendering()
+  } catch (e) {
+    console.error('[FFTVisualizer] Local audio error:', e)
+    emit('error', e instanceof Error ? e.message : 'Failed to start local audio')
+  }
+}
+
+function stopLocalAudio() {
+  localAudio.stop()
+  stopRendering()
+  isConnected.value = false
+  emit('disconnected')
+}
+
+function connect() {
+  if (props.mode === 'local') {
+    startLocalAudio()
+  } else {
+    connectWebSocket()
+  }
+}
+
+function disconnect() {
+  if (props.mode === 'local') {
+    stopLocalAudio()
+  } else {
+    disconnectWebSocket()
+  }
 }
 
 function startRendering() {
@@ -571,8 +623,23 @@ watch(() => props.bands, (newBands) => {
   displayPeakData.value = new Float32Array(newBands)
 })
 
+// Watch local audio FFT data and feed into processing pipeline
+watch(localAudio.fftData, (newData) => {
+  if (props.mode !== 'local' || !localAudio.isActive.value) return
+  // Clone since processFFTData mutates the array
+  processFFTData(new Uint8Array(newData))
+})
+
 // Watch for websocketUrl changes - reconnect
 watch(() => props.websocketUrl, () => {
+  if (props.mode === 'websocket') {
+    disconnect()
+    connect()
+  }
+})
+
+// Watch for mode changes - switch data source
+watch(() => props.mode, () => {
   disconnect()
   connect()
 })
