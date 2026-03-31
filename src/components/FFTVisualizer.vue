@@ -5,9 +5,10 @@ import { useLocalAudio } from '../composables/useLocalAudio'
 /**
  * FFT Visualizer - High-performance WebGL spectrum analyzer
  *
- * Supports two modes:
+ * Supports three modes:
  * - 'websocket': Receives pre-computed FFT data via WebSocket (default)
  * - 'local': Captures audio from microphone and computes FFT in-browser via Rust WASM
+ * - 'external': Receives externally provided FFT data via props
  *
  * WebSocket Protocol (mode='websocket'):
  * 1. Connect to websocketUrl
@@ -16,32 +17,38 @@ import { useLocalAudio } from '../composables/useLocalAudio'
  */
 
 const props = withDefaults(defineProps<{
-  /** Data source mode: 'websocket' for external server, 'local' for browser mic + WASM FFT, 'external' for externally provided data */
+  /** Data source mode */
   mode?: 'websocket' | 'local' | 'external'
   /** WebSocket URL (required when mode='websocket') */
   websocketUrl?: string
-  /** External FFT data (required when mode='external') - Uint8Array of frequency magnitudes (0-255) */
+  /** External FFT data (mono or combined) - Uint8Array of frequency magnitudes (0-255) */
   data?: Uint8Array
-  /** Audio source type for local mode: 'mic' for microphone, 'display' for system/tab audio */
+  /** External FFT data for left channel (stereo mode) */
+  dataLeft?: Uint8Array
+  /** External FFT data for right channel (stereo mode) */
+  dataRight?: Uint8Array
+  /** Audio source type for local mode */
   audioSource?: 'mic' | 'display'
-  /** Audio input device ID for local mode (default: system default) */
+  /** Audio input device ID for local mode */
   audioDeviceId?: string
   /** Show peak indicators above bars */
   showPeaks?: boolean
   /** Peak decay rate (0.99 = slow decay, 0.9 = fast decay) */
   peakDecay?: number
-  /** Number of frequency bands to display (aggregates if server sends more) */
+  /** Number of frequency bands to display */
   bands?: 10 | 20 | 40 | 80
   /** Enable LED segment effect */
   ledBars?: boolean
-  /** Bar color gradient - array of {stop, color} or preset name */
+  /** Bar color gradient */
   gradient?: 'classic' | 'rainbow' | 'blue' | Array<{stop: number, color: string}>
-  /** Gradient direction: vertical (within each bar) or horizontal (across all bars) */
+  /** Gradient direction */
   gradientDirection?: 'vertical' | 'horizontal'
-  /** Noise floor threshold (0-255) - values below this are suppressed */
+  /** Noise floor threshold (0-255) */
   noiseFloor?: number
-  /** Temporal smoothing factor (0 = no smoothing, 0.9 = heavy smoothing) */
+  /** Temporal smoothing factor (0 = none, 0.9 = heavy) */
   smoothing?: number
+  /** Enable stereo mode (left channel top, right channel bottom) */
+  stereo?: boolean
 }>(), {
   mode: 'websocket',
   showPeaks: true,
@@ -51,7 +58,8 @@ const props = withDefaults(defineProps<{
   gradient: 'classic',
   gradientDirection: 'vertical',
   noiseFloor: 0,
-  smoothing: 0
+  smoothing: 0,
+  stereo: false
 })
 
 const emit = defineEmits<{
@@ -68,14 +76,28 @@ const fps = ref(0)
 
 // FFT data (server sends N bins, we aggregate for display)
 const serverBins = ref(80)
+
+// Mono data
 const fftData = ref<Uint8Array>(new Uint8Array(80))
 const smoothedFftData = ref<Float32Array>(new Float32Array(80))
 const peakData = ref<Float32Array>(new Float32Array(80))
+
+// Stereo data (left/right channels)
+const fftDataLeft = ref<Uint8Array>(new Uint8Array(80))
+const smoothedFftDataLeft = ref<Float32Array>(new Float32Array(80))
+const peakDataLeft = ref<Float32Array>(new Float32Array(80))
+const fftDataRight = ref<Uint8Array>(new Uint8Array(80))
+const smoothedFftDataRight = ref<Float32Array>(new Float32Array(80))
+const peakDataRight = ref<Float32Array>(new Float32Array(80))
 
 // Display data (aggregated to props.bands)
 const displayBins = computed(() => props.bands)
 const displayFftData = ref<Uint8Array>(new Uint8Array(props.bands))
 const displayPeakData = ref<Float32Array>(new Float32Array(props.bands))
+const displayFftDataLeft = ref<Uint8Array>(new Uint8Array(props.bands))
+const displayPeakDataLeft = ref<Float32Array>(new Float32Array(props.bands))
+const displayFftDataRight = ref<Uint8Array>(new Uint8Array(props.bands))
+const displayPeakDataRight = ref<Float32Array>(new Float32Array(props.bands))
 
 // Aggregate bins down to fewer bands (max of each group)
 function aggregateBins(source: Uint8Array, targetBands: number): Uint8Array {
@@ -129,6 +151,8 @@ let program: WebGLProgram | null = null
 let positionBuffer: WebGLBuffer | null = null
 let fftTexture: WebGLTexture | null = null
 let peakTexture: WebGLTexture | null = null
+let fftTextureRight: WebGLTexture | null = null
+let peakTextureRight: WebGLTexture | null = null
 
 // Shader locations
 let uResolutionLoc: WebGLUniformLocation | null = null
@@ -137,8 +161,11 @@ let uShowPeaksLoc: WebGLUniformLocation | null = null
 let uLedBarsLoc: WebGLUniformLocation | null = null
 let uGradientLoc: WebGLUniformLocation | null = null
 let uGradientHorizontalLoc: WebGLUniformLocation | null = null
+let uStereoLoc: WebGLUniformLocation | null = null
 let uFftDataLoc: WebGLUniformLocation | null = null
 let uPeakDataLoc: WebGLUniformLocation | null = null
+let uFftDataRightLoc: WebGLUniformLocation | null = null
+let uPeakDataRightLoc: WebGLUniformLocation | null = null
 
 const vertexShaderSource = `
   attribute vec2 a_position;
@@ -156,13 +183,15 @@ const fragmentShaderSource = `
   uniform bool u_ledBars;
   uniform int u_gradient;
   uniform bool u_gradientHorizontal;
+  uniform bool u_stereo;
   uniform sampler2D u_fftData;
   uniform sampler2D u_peakData;
+  uniform sampler2D u_fftDataRight;
+  uniform sampler2D u_peakDataRight;
 
   vec3 getGradientColor(float t) {
     if (u_gradient == 1) {
-      // Soft rainbow (prism style, similar to audiomotion-analyzer)
-      // Colors: purple -> pink -> salmon -> orange -> yellow -> lime -> teal -> cyan -> blue -> purple
+      // Soft rainbow (prism style)
       float s = t * 11.0;
       vec3 c0, c1;
       float f;
@@ -216,6 +245,7 @@ const fragmentShaderSource = `
 
   void main() {
     vec2 uv = gl_FragCoord.xy / u_resolution;
+    vec4 bgColor = vec4(0.04, 0.04, 0.04, 1.0);
 
     // Calculate which bar we're in
     float barIndex = floor(uv.x * u_bins);
@@ -224,46 +254,121 @@ const fragmentShaderSource = `
     // Gap between bars (25% of bar width)
     float gap = 0.25;
     if (barLocalX > (1.0 - gap)) {
-      gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
+      gl_FragColor = bgColor;
       return;
     }
 
-    // LED effect: create horizontal segments
-    float ledSegments = 64.0;
-    float ledGap = 0.25;
-    float segmentY = fract(uv.y * ledSegments);
-    bool inLedGap = u_ledBars && segmentY > (1.0 - ledGap);
-
     // Sample FFT value for this bar
     float texCoord = (barIndex + 0.5) / u_bins;
-    float fftValue = texture2D(u_fftData, vec2(texCoord, 0.5)).r;
-    float peakValue = texture2D(u_peakData, vec2(texCoord, 0.5)).r;
 
-    // Check if we're in the bar area
-    if (uv.y <= fftValue) {
-      if (inLedGap) {
-        gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
-      } else {
-        float gradientPos = u_gradientHorizontal ? uv.x : uv.y;
-        vec3 color = getGradientColor(gradientPos);
-        gl_FragColor = vec4(color, 1.0);
-      }
-    } else if (u_showPeaks && uv.y >= peakValue - 0.003 && uv.y <= peakValue + 0.003) {
-      // Get peak color from gradient (same as bar color at peak position)
-      float peakGradientPos = u_gradientHorizontal ? uv.x : peakValue;
-      vec3 peakColor = getGradientColor(peakGradientPos);
-      if (u_ledBars) {
-        float peakSegment = floor(peakValue * ledSegments) / ledSegments;
-        if (uv.y >= peakSegment && uv.y <= peakSegment + (1.0 / ledSegments) * (1.0 - ledGap)) {
-          gl_FragColor = vec4(peakColor, 0.5);
+    if (u_stereo) {
+      // Stereo mode: left channel grows up from center, right channel grows down from center
+      float fftLeft = texture2D(u_fftData, vec2(texCoord, 0.5)).r;
+      float peakLeft = texture2D(u_peakData, vec2(texCoord, 0.5)).r;
+      float fftRight = texture2D(u_fftDataRight, vec2(texCoord, 0.5)).r;
+      float peakRight = texture2D(u_peakDataRight, vec2(texCoord, 0.5)).r;
+
+      // LED effect
+      float ledSegments = 64.0;
+      float ledGap = 0.25;
+
+      if (uv.y >= 0.5) {
+        // Top half: left channel (bars grow upward from center)
+        float localY = (uv.y - 0.5) * 2.0; // 0 at center, 1 at top
+
+        float segmentY = fract(localY * ledSegments);
+        bool inLedGap = u_ledBars && segmentY > (1.0 - ledGap);
+
+        if (localY <= fftLeft) {
+          if (inLedGap) {
+            gl_FragColor = bgColor;
+          } else {
+            float gradientPos = u_gradientHorizontal ? uv.x : localY;
+            vec3 color = getGradientColor(gradientPos);
+            gl_FragColor = vec4(color, 1.0);
+          }
+        } else if (u_showPeaks && localY >= peakLeft - 0.006 && localY <= peakLeft + 0.006) {
+          float peakGradientPos = u_gradientHorizontal ? uv.x : peakLeft;
+          vec3 peakColor = getGradientColor(peakGradientPos);
+          if (u_ledBars) {
+            float peakSegment = floor(peakLeft * ledSegments) / ledSegments;
+            if (localY >= peakSegment && localY <= peakSegment + (1.0 / ledSegments) * (1.0 - ledGap)) {
+              gl_FragColor = vec4(peakColor, 0.5);
+            } else {
+              gl_FragColor = bgColor;
+            }
+          } else {
+            gl_FragColor = vec4(peakColor, 0.5);
+          }
         } else {
-          gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
+          gl_FragColor = bgColor;
         }
       } else {
-        gl_FragColor = vec4(peakColor, 0.5);
+        // Bottom half: right channel (bars grow downward from center)
+        float localY = (0.5 - uv.y) * 2.0; // 0 at center, 1 at bottom
+
+        float segmentY = fract(localY * ledSegments);
+        bool inLedGap = u_ledBars && segmentY > (1.0 - ledGap);
+
+        if (localY <= fftRight) {
+          if (inLedGap) {
+            gl_FragColor = bgColor;
+          } else {
+            float gradientPos = u_gradientHorizontal ? uv.x : localY;
+            vec3 color = getGradientColor(gradientPos);
+            gl_FragColor = vec4(color, 1.0);
+          }
+        } else if (u_showPeaks && localY >= peakRight - 0.006 && localY <= peakRight + 0.006) {
+          float peakGradientPos = u_gradientHorizontal ? uv.x : peakRight;
+          vec3 peakColor = getGradientColor(peakGradientPos);
+          if (u_ledBars) {
+            float peakSegment = floor(peakRight * ledSegments) / ledSegments;
+            if (localY >= peakSegment && localY <= peakSegment + (1.0 / ledSegments) * (1.0 - ledGap)) {
+              gl_FragColor = vec4(peakColor, 0.5);
+            } else {
+              gl_FragColor = bgColor;
+            }
+          } else {
+            gl_FragColor = vec4(peakColor, 0.5);
+          }
+        } else {
+          gl_FragColor = bgColor;
+        }
       }
     } else {
-      gl_FragColor = vec4(0.04, 0.04, 0.04, 1.0);
+      // Mono mode (original behavior)
+      float fftValue = texture2D(u_fftData, vec2(texCoord, 0.5)).r;
+      float peakValue = texture2D(u_peakData, vec2(texCoord, 0.5)).r;
+
+      float ledSegments = 64.0;
+      float ledGap = 0.25;
+      float segmentY = fract(uv.y * ledSegments);
+      bool inLedGap = u_ledBars && segmentY > (1.0 - ledGap);
+
+      if (uv.y <= fftValue) {
+        if (inLedGap) {
+          gl_FragColor = bgColor;
+        } else {
+          float gradientPos = u_gradientHorizontal ? uv.x : uv.y;
+          vec3 color = getGradientColor(gradientPos);
+          gl_FragColor = vec4(color, 1.0);
+        }
+      } else if (u_showPeaks && uv.y >= peakValue - 0.003 && uv.y <= peakValue + 0.003) {
+        float peakGradientPos = u_gradientHorizontal ? uv.x : peakValue;
+        vec3 peakColor = getGradientColor(peakGradientPos);
+        if (u_ledBars) {
+          float peakSegment = floor(peakValue * ledSegments) / ledSegments;
+          if (uv.y >= peakSegment && uv.y <= peakSegment + (1.0 / ledSegments) * (1.0 - ledGap)) {
+            gl_FragColor = vec4(peakColor, 0.5);
+          } else {
+            gl_FragColor = bgColor;
+          }
+        } else {
+          gl_FragColor = vec4(peakColor, 0.5);
+        }
+      } else {
+        gl_FragColor = bgColor;
+      }
     }
   }
 `
@@ -282,6 +387,17 @@ function createShader(glCtx: WebGLRenderingContext, type: number, source: string
   }
 
   return shader
+}
+
+function createTexture(glCtx: WebGLRenderingContext): WebGLTexture | null {
+  const texture = glCtx.createTexture()
+  if (!texture) return null
+  glCtx.bindTexture(glCtx.TEXTURE_2D, texture)
+  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_MIN_FILTER, glCtx.LINEAR)
+  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_MAG_FILTER, glCtx.LINEAR)
+  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_WRAP_S, glCtx.CLAMP_TO_EDGE)
+  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_WRAP_T, glCtx.CLAMP_TO_EDGE)
+  return texture
 }
 
 function initWebGL(): boolean {
@@ -343,35 +459,40 @@ function initWebGL(): boolean {
   uLedBarsLoc = gl.getUniformLocation(program, 'u_ledBars')
   uGradientLoc = gl.getUniformLocation(program, 'u_gradient')
   uGradientHorizontalLoc = gl.getUniformLocation(program, 'u_gradientHorizontal')
+  uStereoLoc = gl.getUniformLocation(program, 'u_stereo')
   uFftDataLoc = gl.getUniformLocation(program, 'u_fftData')
   uPeakDataLoc = gl.getUniformLocation(program, 'u_peakData')
+  uFftDataRightLoc = gl.getUniformLocation(program, 'u_fftDataRight')
+  uPeakDataRightLoc = gl.getUniformLocation(program, 'u_peakDataRight')
 
-  // Create textures for FFT and peak data
-  fftTexture = gl.createTexture()
+  // Create textures (left/mono = 0,1 — right = 2,3)
   gl.activeTexture(gl.TEXTURE0)
-  gl.bindTexture(gl.TEXTURE_2D, fftTexture)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-
-  peakTexture = gl.createTexture()
+  fftTexture = createTexture(gl)
   gl.activeTexture(gl.TEXTURE1)
-  gl.bindTexture(gl.TEXTURE_2D, peakTexture)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+  peakTexture = createTexture(gl)
+  gl.activeTexture(gl.TEXTURE2)
+  fftTextureRight = createTexture(gl)
+  gl.activeTexture(gl.TEXTURE3)
+  peakTextureRight = createTexture(gl)
 
   // Set texture units
   gl.uniform1i(uFftDataLoc, 0)
   gl.uniform1i(uPeakDataLoc, 1)
+  gl.uniform1i(uFftDataRightLoc, 2)
+  gl.uniform1i(uPeakDataRightLoc, 3)
 
   return true
 }
 
 // Process raw FFT data: apply noise floor, smoothing, peaks, and aggregate
-function processFFTData(newData: Uint8Array) {
+function processFFTData(
+  newData: Uint8Array,
+  smoothedRef: { value: Float32Array },
+  peakRef: { value: Float32Array },
+  fftRef: { value: Uint8Array },
+  displayFftRef: { value: Uint8Array },
+  displayPeakRef: { value: Float32Array }
+) {
   // Apply noise floor threshold
   const threshold = currentNoiseFloor.value
   for (let i = 0; i < newData.length; i++) {
@@ -389,27 +510,58 @@ function processFFTData(newData: Uint8Array) {
   const smooth = currentSmoothing.value
   if (smooth > 0) {
     for (let i = 0; i < newData.length; i++) {
-      smoothedFftData.value[i] = smooth * smoothedFftData.value[i]! + (1 - smooth) * newData[i]!
-      newData[i] = Math.floor(smoothedFftData.value[i]!)
+      smoothedRef.value[i] = smooth * smoothedRef.value[i]! + (1 - smooth) * newData[i]!
+      newData[i] = Math.floor(smoothedRef.value[i]!)
     }
   }
-  fftData.value = newData
+  fftRef.value = newData
 
   // Update peaks
   for (let i = 0; i < newData.length; i++) {
     const value = newData[i]! / 255
-    if (value > peakData.value[i]!) {
-      peakData.value[i] = value
+    if (value > peakRef.value[i]!) {
+      peakRef.value[i] = value
     } else {
-      peakData.value[i]! *= currentPeakDecay.value
+      peakRef.value[i]! *= currentPeakDecay.value
     }
   }
 
   // Aggregate to display bands
-  displayFftData.value = aggregateBins(fftData.value, displayBins.value)
-  displayPeakData.value = aggregatePeaks(peakData.value, displayBins.value)
+  displayFftRef.value = aggregateBins(fftRef.value, displayBins.value)
+  displayPeakRef.value = aggregatePeaks(peakRef.value, displayBins.value)
+}
 
+function processMonoData(newData: Uint8Array) {
+  processFFTData(newData, smoothedFftData, peakData, fftData, displayFftData, displayPeakData)
   frameCount++
+}
+
+function processLeftData(newData: Uint8Array) {
+  processFFTData(newData, smoothedFftDataLeft, peakDataLeft, fftDataLeft, displayFftDataLeft, displayPeakDataLeft)
+}
+
+function processRightData(newData: Uint8Array) {
+  processFFTData(newData, smoothedFftDataRight, peakDataRight, fftDataRight, displayFftDataRight, displayPeakDataRight)
+  frameCount++
+}
+
+function initBuffers(size: number) {
+  serverBins.value = size
+  fftData.value = new Uint8Array(size)
+  smoothedFftData.value = new Float32Array(size)
+  peakData.value = new Float32Array(size)
+  fftDataLeft.value = new Uint8Array(size)
+  smoothedFftDataLeft.value = new Float32Array(size)
+  peakDataLeft.value = new Float32Array(size)
+  fftDataRight.value = new Uint8Array(size)
+  smoothedFftDataRight.value = new Float32Array(size)
+  peakDataRight.value = new Float32Array(size)
+  displayFftData.value = new Uint8Array(displayBins.value)
+  displayPeakData.value = new Float32Array(displayBins.value)
+  displayFftDataLeft.value = new Uint8Array(displayBins.value)
+  displayPeakDataLeft.value = new Float32Array(displayBins.value)
+  displayFftDataRight.value = new Uint8Array(displayBins.value)
+  displayPeakDataRight.value = new Float32Array(displayBins.value)
 }
 
 function connectWebSocket() {
@@ -434,12 +586,7 @@ function connectWebSocket() {
       try {
         const config = JSON.parse(data)
         if (config.type === 'config' && config.mode === 'fft') {
-          serverBins.value = config.bins || 80
-          fftData.value = new Uint8Array(serverBins.value)
-          smoothedFftData.value = new Float32Array(serverBins.value)
-          peakData.value = new Float32Array(serverBins.value)
-          displayFftData.value = new Uint8Array(displayBins.value)
-          displayPeakData.value = new Float32Array(displayBins.value)
+          initBuffers(config.bins || 80)
           console.log(`[FFTVisualizer] Config: ${config.bins} server bins, displaying ${displayBins.value} bands @ ${config.fps}fps`)
         }
       } catch (e) {
@@ -452,7 +599,7 @@ function connectWebSocket() {
     if (data instanceof ArrayBuffer) {
       const newData = new Uint8Array(data)
       if (newData.length === serverBins.value) {
-        processFFTData(newData)
+        processMonoData(newData)
       }
     }
   }
@@ -559,6 +706,26 @@ function stopRendering() {
   }
 }
 
+function uploadTexture(unit: number, texture: WebGLTexture | null, data: Uint8Array, numBins: number) {
+  if (!gl) return
+  gl.activeTexture(gl.TEXTURE0 + unit)
+  gl.bindTexture(gl.TEXTURE_2D, texture)
+  gl.texImage2D(
+    gl.TEXTURE_2D, 0, gl.LUMINANCE,
+    numBins, 1, 0,
+    gl.LUMINANCE, gl.UNSIGNED_BYTE,
+    data
+  )
+}
+
+function peakToUint8(peakRef: Float32Array, numBins: number): Uint8Array {
+  const result = new Uint8Array(numBins)
+  for (let i = 0; i < numBins; i++) {
+    result[i] = Math.min(255, Math.floor(peakRef[i]! * 255))
+  }
+  return result
+}
+
 function drawSpectrum() {
   if (!gl || !program) return
 
@@ -566,32 +733,22 @@ function drawSpectrum() {
   if (!canvas) return
 
   const numBins = displayBins.value
+  const isStereo = currentStereo.value
 
-  // Update FFT texture with display data
-  gl.activeTexture(gl.TEXTURE0)
-  gl.bindTexture(gl.TEXTURE_2D, fftTexture)
-  gl.texImage2D(
-    gl.TEXTURE_2D, 0, gl.LUMINANCE,
-    numBins, 1, 0,
-    gl.LUMINANCE, gl.UNSIGNED_BYTE,
-    displayFftData.value
-  )
-
-  // Update peak texture (convert float to uint8)
-  const peakUint8 = new Uint8Array(numBins)
-  for (let i = 0; i < numBins; i++) {
-    peakUint8[i] = Math.min(255, Math.floor(displayPeakData.value[i]! * 255))
+  if (isStereo) {
+    // Upload left channel data
+    uploadTexture(0, fftTexture, displayFftDataLeft.value, numBins)
+    uploadTexture(1, peakTexture, peakToUint8(displayPeakDataLeft.value, numBins), numBins)
+    // Upload right channel data
+    uploadTexture(2, fftTextureRight, displayFftDataRight.value, numBins)
+    uploadTexture(3, peakTextureRight, peakToUint8(displayPeakDataRight.value, numBins), numBins)
+  } else {
+    // Upload mono data
+    uploadTexture(0, fftTexture, displayFftData.value, numBins)
+    uploadTexture(1, peakTexture, peakToUint8(displayPeakData.value, numBins), numBins)
   }
-  gl.activeTexture(gl.TEXTURE1)
-  gl.bindTexture(gl.TEXTURE_2D, peakTexture)
-  gl.texImage2D(
-    gl.TEXTURE_2D, 0, gl.LUMINANCE,
-    numBins, 1, 0,
-    gl.LUMINANCE, gl.UNSIGNED_BYTE,
-    peakUint8
-  )
 
-  // Set uniforms (use internal reactive refs for proper reactivity)
+  // Set uniforms
   gl.uniform2f(uResolutionLoc, canvas.width, canvas.height)
   gl.uniform1f(uBinsLoc, numBins)
   gl.uniform1i(uShowPeaksLoc, currentShowPeaks.value ? 1 : 0)
@@ -599,6 +756,7 @@ function drawSpectrum() {
   const gradientIndex = currentGradient.value === 'rainbow' ? 1 : currentGradient.value === 'blue' ? 2 : 0
   gl.uniform1i(uGradientLoc, gradientIndex)
   gl.uniform1i(uGradientHorizontalLoc, currentGradientDirection.value === 'horizontal' ? 1 : 0)
+  gl.uniform1i(uStereoLoc, isStereo ? 1 : 0)
 
   // Draw
   gl.viewport(0, 0, canvas.width, canvas.height)
@@ -624,7 +782,6 @@ function handleResize() {
 }
 
 // Create reactive refs from props using toRefs
-// This ensures props are properly tracked in callbacks
 const {
   showPeaks: currentShowPeaks,
   peakDecay: currentPeakDecay,
@@ -632,37 +789,57 @@ const {
   gradient: currentGradient,
   gradientDirection: currentGradientDirection,
   noiseFloor: currentNoiseFloor,
-  smoothing: currentSmoothing
+  smoothing: currentSmoothing,
+  stereo: currentStereo
 } = toRefs(props)
 
 // Watch for bands prop changes
 watch(() => props.bands, (newBands) => {
   displayFftData.value = new Uint8Array(newBands)
   displayPeakData.value = new Float32Array(newBands)
+  displayFftDataLeft.value = new Uint8Array(newBands)
+  displayPeakDataLeft.value = new Float32Array(newBands)
+  displayFftDataRight.value = new Uint8Array(newBands)
+  displayPeakDataRight.value = new Float32Array(newBands)
 })
 
 // Watch local audio FFT data and feed into processing pipeline
 watch(localAudio.fftData, (newData) => {
   if (props.mode !== 'local' || !localAudio.isActive.value) return
-  // Clone since processFFTData mutates the array
-  processFFTData(new Uint8Array(newData))
+  processMonoData(new Uint8Array(newData))
 })
 
-// Watch external data prop and feed into processing pipeline
+// Watch external data prop (mono) and feed into processing pipeline
 watch(() => props.data, (newData) => {
   if (props.mode !== 'external' || !newData) return
 
-  // Initialize buffers on first data or size change
   if (newData.length !== serverBins.value) {
-    serverBins.value = newData.length
-    fftData.value = new Uint8Array(newData.length)
-    smoothedFftData.value = new Float32Array(newData.length)
-    peakData.value = new Float32Array(newData.length)
-    displayFftData.value = new Uint8Array(displayBins.value)
-    displayPeakData.value = new Float32Array(displayBins.value)
+    initBuffers(newData.length)
   }
 
-  processFFTData(new Uint8Array(newData))
+  processMonoData(new Uint8Array(newData))
+})
+
+// Watch external left channel data
+watch(() => props.dataLeft, (newData) => {
+  if (props.mode !== 'external' || !newData) return
+
+  if (newData.length !== serverBins.value) {
+    initBuffers(newData.length)
+  }
+
+  processLeftData(new Uint8Array(newData))
+})
+
+// Watch external right channel data
+watch(() => props.dataRight, (newData) => {
+  if (props.mode !== 'external' || !newData) return
+
+  if (newData.length !== serverBins.value) {
+    initBuffers(newData.length)
+  }
+
+  processRightData(new Uint8Array(newData))
 })
 
 // Detect when display sharing is stopped via browser UI
@@ -709,6 +886,8 @@ onUnmounted(() => {
   if (gl) {
     if (fftTexture) gl.deleteTexture(fftTexture)
     if (peakTexture) gl.deleteTexture(peakTexture)
+    if (fftTextureRight) gl.deleteTexture(fftTextureRight)
+    if (peakTextureRight) gl.deleteTexture(peakTextureRight)
     if (positionBuffer) gl.deleteBuffer(positionBuffer)
     if (program) gl.deleteProgram(program)
   }
@@ -719,11 +898,8 @@ defineExpose({
   connect,
   disconnect,
   isConnected,
-  /** Available audio input devices (local mode only) */
   audioDevices: localAudio.devices,
-  /** Currently active audio device ID (local mode only) */
   activeAudioDeviceId: localAudio.activeDeviceId,
-  /** Enumerate available audio input devices */
   getAudioDevices: localAudio.getDevices
 })
 </script>
