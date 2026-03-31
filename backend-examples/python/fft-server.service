@@ -1,0 +1,18 @@
+[Unit]
+Description=FFT WebSocket Server (gadget, port 3002)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/wouter/git/vue-fft-visualizer/backend-examples/python/fft_server_pi.py --device postdsp --port 3002 --format s24_3le
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fft-server
+User=wouter
+Group=wouter
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

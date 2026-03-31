@@ -9,7 +9,7 @@ Requirements:
     pip install websockets numpy pyalsaaudio
 
 Usage:
-    python fft_server.py [--device default] [--port 3001]
+    python fft_server.py [--device default] [--port 3001] [--rate 96000] [--format s32_le]
 
 Protocol:
     1. Client connects to ws://host:port/
@@ -28,12 +28,13 @@ import alsaaudio
 import numpy as np
 from websockets.asyncio.server import serve, ServerConnection
 
-# Audio capture settings - configured for Pi Audio devices
-# Use: --device gadget (DragonFly pre-DSP) or --device loopsnoop2 (Explorer² pre-DSP)
-SAMPLE_RATE = 96000  # 96kHz for gadget/postdsp, 192kHz for loopsnoop2/postdsp2
 CHANNELS = 2
-FORMAT = alsaaudio.PCM_FORMAT_S32_LE  # S32_LE for gadget, loopsnoop2
 PERIOD_SIZE = 512
+
+FORMAT_MAP = {
+    's32_le': (alsaaudio.PCM_FORMAT_S32_LE, np.int32, 2147483648.0),
+    's24_3le': (alsaaudio.PCM_FORMAT_S24_3LE, None, 8388608.0),  # 3 bytes/sample, custom decode
+}
 
 # FFT settings
 FFT_SIZE = 1024
@@ -49,9 +50,13 @@ class Client:
 
 
 class FFTServer:
-    def __init__(self, device: str = 'default', port: int = 3001):
+    def __init__(self, device: str = 'default', port: int = 3001,
+                 sample_rate: int = 96000, format_name: str = 's32_le'):
         self.device = device
         self.port = port
+        self.sample_rate = sample_rate
+        self.format_name = format_name
+        self.alsa_format, self._sample_dtype, self._sample_scale = FORMAT_MAP[format_name]
         self.clients: list[Client] = []
         self.pcm: Optional[alsaaudio.PCM] = None
         self.running = False
@@ -108,7 +113,7 @@ class FFTServer:
 
     def _interpolate_fft(self, magnitude: np.ndarray, freq: float) -> float:
         """Interpolate FFT magnitude at a specific frequency."""
-        bin_width = SAMPLE_RATE / FFT_SIZE
+        bin_width = self.sample_rate / FFT_SIZE
         bin_pos = freq / bin_width
         bin_lo = int(bin_pos)
         bin_hi = min(bin_lo + 1, len(magnitude) - 1)
@@ -121,14 +126,14 @@ class FFTServer:
 
     def _open_device(self) -> None:
         """Open ALSA capture device."""
-        print(f"Opening ALSA device '{self.device}'")
+        print(f"Opening ALSA device '{self.device}' ({self.sample_rate}Hz, {self.format_name})")
         self.pcm = alsaaudio.PCM(
             type=alsaaudio.PCM_CAPTURE,
             mode=alsaaudio.PCM_NORMAL,
             device=self.device,
             channels=CHANNELS,
-            rate=SAMPLE_RATE,
-            format=FORMAT,
+            rate=self.sample_rate,
+            format=self.alsa_format,
             periodsize=PERIOD_SIZE
         )
 
@@ -148,25 +153,41 @@ class FFTServer:
         if current_time - self._last_fft_time < self._fft_interval:
             return None
 
-        # Convert to float mono (S32_LE format)
-        samples = np.frombuffer(data, dtype=np.int32)
+        # Convert to float mono
+        if self._sample_dtype is not None:
+            # Standard format (e.g. S32_LE): direct numpy decode
+            samples = np.frombuffer(data, dtype=self._sample_dtype)
+        else:
+            # S24_3LE: 3 bytes per sample, need manual decode
+            raw = np.frombuffer(data, dtype=np.uint8)
+            num_samples = len(raw) // 3
+            padded = np.zeros((num_samples, 4), dtype=np.uint8)
+            padded[:, 0:3] = raw.reshape(num_samples, 3)
+            padded[:, 3] = np.where(padded[:, 2] & 0x80, 0xFF, 0x00)
+            samples = padded.view(np.int32).flatten()
+
         num_frames = len(samples) // CHANNELS
         stereo = samples.reshape(num_frames, CHANNELS)
-        mono = stereo.mean(axis=1).astype(np.float32) / 2147483648.0
+        mono = stereo.mean(axis=1).astype(np.float32) / self._sample_scale
 
         # Add to rolling buffer
-        space_available = FFT_SIZE - self._fft_buffer_pos
-        samples_to_add = min(len(mono), space_available)
-
-        self._fft_buffer[self._fft_buffer_pos:self._fft_buffer_pos + samples_to_add] = mono[:samples_to_add]
-        self._fft_buffer_pos += samples_to_add
-
-        if samples_to_add < len(mono):
-            remaining = mono[samples_to_add:]
-            shift_amount = len(remaining)
-            self._fft_buffer[:-shift_amount] = self._fft_buffer[shift_amount:]
-            self._fft_buffer[-shift_amount:] = remaining
+        if len(mono) >= FFT_SIZE:
+            # Read is larger than buffer — just take the last FFT_SIZE samples
+            self._fft_buffer[:] = mono[-FFT_SIZE:]
             self._fft_buffer_pos = FFT_SIZE
+        else:
+            space_available = FFT_SIZE - self._fft_buffer_pos
+            samples_to_add = min(len(mono), space_available)
+
+            self._fft_buffer[self._fft_buffer_pos:self._fft_buffer_pos + samples_to_add] = mono[:samples_to_add]
+            self._fft_buffer_pos += samples_to_add
+
+            if samples_to_add < len(mono):
+                remaining = mono[samples_to_add:]
+                shift_amount = len(remaining)
+                self._fft_buffer[:-shift_amount] = self._fft_buffer[shift_amount:]
+                self._fft_buffer[-shift_amount:] = remaining
+                self._fft_buffer_pos = FFT_SIZE
 
         if self._fft_buffer_pos < FFT_SIZE:
             return None
@@ -180,7 +201,7 @@ class FFTServer:
 
         # Map to frequency bands
         spectrum = np.zeros(FFT_BINS, dtype=np.float32)
-        bin_width = SAMPLE_RATE / FFT_SIZE
+        bin_width = self.sample_rate / FFT_SIZE
 
         for i, (freq_lo, freq_hi) in enumerate(self._band_edges):
             val_lo = self._interpolate_fft(magnitude, freq_lo)
@@ -297,9 +318,13 @@ def main():
     parser = argparse.ArgumentParser(description='FFT WebSocket Server')
     parser.add_argument('--device', default='default', help='ALSA device name')
     parser.add_argument('--port', type=int, default=3001, help='WebSocket port')
+    parser.add_argument('--rate', type=int, default=96000, help='Sample rate in Hz')
+    parser.add_argument('--format', default='s32_le', choices=FORMAT_MAP.keys(),
+                        help='ALSA sample format')
     args = parser.parse_args()
 
-    server = FFTServer(device=args.device, port=args.port)
+    server = FFTServer(device=args.device, port=args.port,
+                       sample_rate=args.rate, format_name=args.format)
     asyncio.run(server.start())
 
 
