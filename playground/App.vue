@@ -17,6 +17,10 @@ const mode = ref<'websocket' | 'local'>('local')
 const wsUrl = ref('ws://10.0.2.213:3002')
 const wsOptions = ['ws://10.0.2.213:3002', 'ws://127.0.0.1:3001']
 
+// Audio source & device selection
+const audioSource = ref<'mic' | 'display'>('mic')
+const selectedDeviceId = ref<string>('')
+
 // Component refs
 const fftRef = ref<InstanceType<typeof FFTVisualizer>>()
 
@@ -40,11 +44,18 @@ function onFullscreenChange() {
 onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
 onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
 
-function toggleConnection() {
+async function toggleConnection() {
   if (fftRef.value?.isConnected) {
     fftRef.value?.disconnect()
   } else {
     fftRef.value?.connect()
+  }
+}
+
+async function onDeviceChange() {
+  if (fftRef.value?.isConnected && mode.value === 'local') {
+    fftRef.value.disconnect()
+    fftRef.value.connect()
   }
 }
 </script>
@@ -59,6 +70,24 @@ function toggleConnection() {
           <option value="local">Local (WASM)</option>
           <option value="websocket">WebSocket</option>
         </select>
+        <template v-if="mode === 'local'">
+          <select v-model="audioSource" @change="onDeviceChange">
+            <option value="mic">Microphone</option>
+            <option value="display">System Audio</option>
+          </select>
+          <select
+            v-if="audioSource === 'mic' && fftRef?.audioDevices?.length > 1"
+            v-model="selectedDeviceId"
+            @change="onDeviceChange"
+          >
+            <option value="">Default</option>
+            <option
+              v-for="device in fftRef.audioDevices"
+              :key="device.deviceId"
+              :value="device.deviceId"
+            >{{ device.label }}</option>
+          </select>
+        </template>
         <template v-if="mode === 'websocket'">
           <select v-model="wsUrl">
             <option v-for="url in wsOptions" :key="url" :value="url">{{ url }}</option>
@@ -77,6 +106,8 @@ function toggleConnection() {
         ref="fftRef"
         :mode="mode"
         :websocket-url="wsUrl"
+        :audio-source="audioSource"
+        :audio-device-id="selectedDeviceId || undefined"
         :bands="bands"
         :led-bars="ledBars"
         :show-peaks="showPeaks"

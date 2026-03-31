@@ -1,5 +1,12 @@
 import { ref, type Ref } from 'vue'
 
+export type AudioSourceType = 'mic' | 'display'
+
+export interface AudioDevice {
+  deviceId: string
+  label: string
+}
+
 export interface LocalAudioOptions {
   /** FFT window size (default: 2048) */
   fftSize?: number
@@ -9,6 +16,8 @@ export interface LocalAudioOptions {
   startFreq?: number
   /** Highest frequency in Hz (default: 18000) */
   endFreq?: number
+  /** Audio input device ID (default: system default) */
+  deviceId?: string
 }
 
 export interface LocalAudioReturn {
@@ -16,8 +25,18 @@ export interface LocalAudioReturn {
   fftData: Ref<Uint8Array>
   /** Whether local audio capture is active */
   isActive: Ref<boolean>
-  /** Start audio capture and FFT processing */
-  start: () => Promise<void>
+  /** Current audio source type */
+  sourceType: Ref<AudioSourceType>
+  /** Available audio input devices (populated after getDevices or start) */
+  devices: Ref<AudioDevice[]>
+  /** Currently active device ID */
+  activeDeviceId: Ref<string | undefined>
+  /** Enumerate available audio input devices (requests mic permission if needed) */
+  getDevices: () => Promise<AudioDevice[]>
+  /** Start audio capture from microphone */
+  start: (deviceId?: string) => Promise<void>
+  /** Start audio capture from system/tab audio via screen sharing */
+  startDisplay: () => Promise<void>
   /** Stop audio capture */
   stop: () => void
 }
@@ -30,6 +49,9 @@ export function useLocalAudio(options?: LocalAudioOptions): LocalAudioReturn {
 
   const fftData = ref<Uint8Array>(new Uint8Array(bins))
   const isActive = ref(false)
+  const sourceType = ref<AudioSourceType>('mic')
+  const devices = ref<AudioDevice[]>([])
+  const activeDeviceId = ref<string | undefined>(options?.deviceId)
 
   let audioContext: AudioContext | null = null
   let mediaStream: MediaStream | null = null
@@ -38,6 +60,22 @@ export function useLocalAudio(options?: LocalAudioOptions): LocalAudioReturn {
   let animationFrameId: number | null = null
   let processor: any = null // FftProcessor from WASM
   let timeDomainBuffer: Float32Array<ArrayBuffer> | null = null
+
+  async function enumerateAudioDevices(): Promise<AudioDevice[]> {
+    const allDevices = await navigator.mediaDevices.enumerateDevices()
+    return allDevices
+      .filter(d => d.kind === 'audioinput')
+      .map(d => ({ deviceId: d.deviceId, label: d.label || `Microphone (${d.deviceId.slice(0, 8)})` }))
+  }
+
+  async function getDevices(): Promise<AudioDevice[]> {
+    // Request temporary mic permission to get labeled device list
+    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    const result = await enumerateAudioDevices()
+    tempStream.getTracks().forEach(track => track.stop())
+    devices.value = result
+    return result
+  }
 
   function tick() {
     if (!analyserNode || !processor || !timeDomainBuffer) return
@@ -49,31 +87,20 @@ export function useLocalAudio(options?: LocalAudioOptions): LocalAudioReturn {
     animationFrameId = requestAnimationFrame(tick)
   }
 
-  async function start() {
-    if (isActive.value) return
-
+  async function initProcessing(stream: MediaStream) {
     // Lazy-load WASM module
     const wasmModule = await import('../../wasm/pkg/fft_wasm')
     const { FftProcessor } = wasmModule
 
-    // Request microphone access
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false
-      }
-    })
+    mediaStream = stream
 
     audioContext = new AudioContext()
     sourceNode = audioContext.createMediaStreamSource(mediaStream)
 
-    // Use AnalyserNode as a sample buffer (we do our own FFT in WASM)
     analyserNode = audioContext.createAnalyser()
     analyserNode.fftSize = fftSize
     sourceNode.connect(analyserNode)
 
-    // Create WASM FFT processor
     processor = new FftProcessor(
       fftSize,
       bins,
@@ -85,6 +112,55 @@ export function useLocalAudio(options?: LocalAudioOptions): LocalAudioReturn {
     timeDomainBuffer = new Float32Array(fftSize)
     isActive.value = true
     animationFrameId = requestAnimationFrame(tick)
+  }
+
+  async function start(deviceId?: string) {
+    if (isActive.value) stop()
+
+    const selectedDeviceId = deviceId ?? activeDeviceId.value
+
+    const audioConstraints: MediaTrackConstraints = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false
+    }
+    if (selectedDeviceId) {
+      audioConstraints.deviceId = { exact: selectedDeviceId }
+    }
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
+
+    // Track which device we're actually using
+    const audioTrack = stream.getAudioTracks()[0]
+    activeDeviceId.value = audioTrack?.getSettings().deviceId
+    sourceType.value = 'mic'
+
+    // Refresh device list (now we have permission, labels will be populated)
+    devices.value = await enumerateAudioDevices()
+
+    await initProcessing(stream)
+  }
+
+  async function startDisplay() {
+    if (isActive.value) stop()
+
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      audio: true,
+      video: true // required by some browsers, we just ignore the video track
+    })
+
+    // Remove video track — we only need audio
+    stream.getVideoTracks().forEach(track => track.stop())
+
+    // Handle user stopping the share via browser UI
+    stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+      stop()
+    })
+
+    activeDeviceId.value = undefined
+    sourceType.value = 'display'
+
+    await initProcessing(stream)
   }
 
   function stop() {
@@ -119,5 +195,5 @@ export function useLocalAudio(options?: LocalAudioOptions): LocalAudioReturn {
     fftData.value = new Uint8Array(bins)
   }
 
-  return { fftData, isActive, start, stop }
+  return { fftData, isActive, sourceType, devices, activeDeviceId, getDevices, start, startDisplay, stop }
 }

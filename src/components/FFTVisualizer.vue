@@ -20,6 +20,10 @@ const props = withDefaults(defineProps<{
   mode?: 'websocket' | 'local'
   /** WebSocket URL (required when mode='websocket') */
   websocketUrl?: string
+  /** Audio source type for local mode: 'mic' for microphone, 'display' for system/tab audio */
+  audioSource?: 'mic' | 'display'
+  /** Audio input device ID for local mode (default: system default) */
+  audioDeviceId?: string
   /** Show peak indicators above bars */
   showPeaks?: boolean
   /** Peak decay rate (0.99 = slow decay, 0.9 = fast decay) */
@@ -480,7 +484,11 @@ function disconnectWebSocket() {
 
 async function startLocalAudio() {
   try {
-    await localAudio.start()
+    if (props.audioSource === 'display') {
+      await localAudio.startDisplay()
+    } else {
+      await localAudio.start(props.audioDeviceId)
+    }
     isConnected.value = true
     emit('connected')
     startRendering()
@@ -630,6 +638,15 @@ watch(localAudio.fftData, (newData) => {
   processFFTData(new Uint8Array(newData))
 })
 
+// Detect when display sharing is stopped via browser UI
+watch(localAudio.isActive, (active) => {
+  if (!active && isConnected.value && props.mode === 'local') {
+    stopRendering()
+    isConnected.value = false
+    emit('disconnected')
+  }
+})
+
 // Watch for websocketUrl changes - reconnect
 watch(() => props.websocketUrl, () => {
   if (props.mode === 'websocket') {
@@ -674,7 +691,13 @@ onUnmounted(() => {
 defineExpose({
   connect,
   disconnect,
-  isConnected
+  isConnected,
+  /** Available audio input devices (local mode only) */
+  audioDevices: localAudio.devices,
+  /** Currently active audio device ID (local mode only) */
+  activeAudioDeviceId: localAudio.activeDeviceId,
+  /** Enumerate available audio input devices */
+  getAudioDevices: localAudio.getDevices
 })
 </script>
 
