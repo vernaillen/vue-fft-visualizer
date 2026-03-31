@@ -19,7 +19,8 @@
   "scripts": {
     "dev": "vite",
     "build:wasm": "cd wasm && wasm-pack build --target bundler --release",
-    "build": "pnpm build:wasm && vue-tsc && vite build",
+    "build": "vue-tsc && vite build",
+    "build:playground": "vue-tsc && vite build --mode playground",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },
