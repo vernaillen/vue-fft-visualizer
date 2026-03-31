@@ -16,10 +16,12 @@ import { useLocalAudio } from '../composables/useLocalAudio'
  */
 
 const props = withDefaults(defineProps<{
-  /** Data source mode: 'websocket' for external server, 'local' for browser mic + WASM FFT */
-  mode?: 'websocket' | 'local'
+  /** Data source mode: 'websocket' for external server, 'local' for browser mic + WASM FFT, 'external' for externally provided data */
+  mode?: 'websocket' | 'local' | 'external'
   /** WebSocket URL (required when mode='websocket') */
   websocketUrl?: string
+  /** External FFT data (required when mode='external') - Uint8Array of frequency magnitudes (0-255) */
+  data?: Uint8Array
   /** Audio source type for local mode: 'mic' for microphone, 'display' for system/tab audio */
   audioSource?: 'mic' | 'display'
   /** Audio input device ID for local mode (default: system default) */
@@ -508,6 +510,10 @@ function stopLocalAudio() {
 function connect() {
   if (props.mode === 'local') {
     startLocalAudio()
+  } else if (props.mode === 'external') {
+    isConnected.value = true
+    emit('connected')
+    startRendering()
   } else {
     connectWebSocket()
   }
@@ -516,6 +522,10 @@ function connect() {
 function disconnect() {
   if (props.mode === 'local') {
     stopLocalAudio()
+  } else if (props.mode === 'external') {
+    stopRendering()
+    isConnected.value = false
+    emit('disconnected')
   } else {
     disconnectWebSocket()
   }
@@ -635,6 +645,23 @@ watch(() => props.bands, (newBands) => {
 watch(localAudio.fftData, (newData) => {
   if (props.mode !== 'local' || !localAudio.isActive.value) return
   // Clone since processFFTData mutates the array
+  processFFTData(new Uint8Array(newData))
+})
+
+// Watch external data prop and feed into processing pipeline
+watch(() => props.data, (newData) => {
+  if (props.mode !== 'external' || !newData) return
+
+  // Initialize buffers on first data or size change
+  if (newData.length !== serverBins.value) {
+    serverBins.value = newData.length
+    fftData.value = new Uint8Array(newData.length)
+    smoothedFftData.value = new Float32Array(newData.length)
+    peakData.value = new Float32Array(newData.length)
+    displayFftData.value = new Uint8Array(displayBins.value)
+    displayPeakData.value = new Float32Array(displayBins.value)
+  }
+
   processFFTData(new Uint8Array(newData))
 })
 

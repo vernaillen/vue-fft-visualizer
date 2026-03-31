@@ -12,16 +12,17 @@ export default defineConfig(({ mode }) => ({
     topLevelAwait(),
     ...(mode !== 'playground' ? [dts({
       insertTypesEntry: true,
-      include: ['src/**/*.ts', 'src/**/*.vue']
+      include: ['src/**/*.ts', 'src/**/*.vue', 'wasm/pkg/*.d.ts']
     })] : [])
   ],
   build: mode === 'playground'
     ? {}
     : {
         lib: {
-          entry: resolve(__dirname, 'src/index.ts'),
-          name: 'VueFFTVisualizer',
-          fileName: 'vue-fft-visualizer',
+          entry: {
+            'vue-fft-visualizer': resolve(__dirname, 'src/index.ts'),
+            'fft-wasm': resolve(__dirname, 'src/wasm.ts'),
+          },
           formats: ['es'] as const
         },
         rollupOptions: {
