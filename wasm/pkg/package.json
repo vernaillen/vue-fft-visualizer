@@ -1,0 +1,18 @@
+{
+  "name": "fft-wasm",
+  "type": "module",
+  "description": "WASM FFT processor for vue-fft-visualizer",
+  "version": "0.1.0",
+  "files": [
+    "fft_wasm_bg.wasm",
+    "fft_wasm.js",
+    "fft_wasm_bg.js",
+    "fft_wasm.d.ts"
+  ],
+  "main": "fft_wasm.js",
+  "types": "fft_wasm.d.ts",
+  "sideEffects": [
+    "./fft_wasm.js",
+    "./snippets/*"
+  ]
+}
