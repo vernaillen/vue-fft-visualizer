@@ -533,6 +533,13 @@ function processFFTData(
 
 function processMonoData(newData: Uint8Array) {
   processFFTData(newData, smoothedFftData, peakData, fftData, displayFftData, displayPeakData)
+  // When stereo is enabled but only mono data is available, mirror to both channels
+  if (currentStereo.value) {
+    displayFftDataLeft.value = displayFftData.value
+    displayPeakDataLeft.value = displayPeakData.value
+    displayFftDataRight.value = displayFftData.value
+    displayPeakDataRight.value = displayPeakData.value
+  }
   frameCount++
 }
 
