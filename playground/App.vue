@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { FFTVisualizer } from '../src'
+import { FFTVisualizer, AuroraVisualizer, BlobVisualizer } from '../src'
 
 // FFT Visualizer Controls
 const bands = ref<10 | 20 | 40 | 80>(40)
@@ -12,6 +12,22 @@ const peakDecay = ref(0.99)
 const gradient = ref<'classic' | 'rainbow' | 'blue'>('rainbow')
 const gradientDirection = ref<'vertical' | 'horizontal'>('horizontal')
 
+// Aurora Visualizer Controls
+const auroraIntensity = ref(0.7)
+const auroraSpeed = ref(1.0)
+const auroraPalette = ref<'classic' | 'warm' | 'cool' | 'rainbow'>('classic')
+const auroraLayers = ref(4)
+const auroraAutoSpeed = ref(true)
+const auroraAutoLayers = ref(true)
+
+// Blob Visualizer Controls
+const blobSpeed = ref(0.3)
+const blobNoiseStrength = ref(0.3)
+const blobNoiseDensity = ref(1.5)
+const blobHue = ref(0.5)
+const blobPalette = ref<'rainbow' | 'warm' | 'cool' | 'electric'>('rainbow')
+const blobAutoReactive = ref(true)
+
 // Mode & WebSocket URL
 const mode = ref<'websocket' | 'local'>('local')
 const wsUrl = ref('ws://10.0.2.213:3002')
@@ -19,9 +35,13 @@ const wsOptions = ['ws://10.0.2.213:3002', 'ws://127.0.0.1:3001']
 
 // Component refs
 const fftRef = ref<InstanceType<typeof FFTVisualizer>>()
+const auroraRef = ref<InstanceType<typeof AuroraVisualizer>>()
+const blobRef = ref<InstanceType<typeof BlobVisualizer>>()
 
 // Fullscreen
 const fftContainer = ref<HTMLElement>()
+const auroraContainer = ref<HTMLElement>()
+const blobContainer = ref<HTMLElement>()
 const fullscreenEl = ref<Element | null>(null)
 
 function toggleFullscreen(el: HTMLElement | undefined) {
@@ -40,11 +60,19 @@ function onFullscreenChange() {
 onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
 onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
 
+const anyConnected = computed(() =>
+  fftRef.value?.isConnected || auroraRef.value?.isConnected || blobRef.value?.isConnected
+)
+
 function toggleConnection() {
-  if (fftRef.value?.isConnected) {
+  if (anyConnected.value) {
     fftRef.value?.disconnect()
+    auroraRef.value?.disconnect()
+    blobRef.value?.disconnect()
   } else {
     fftRef.value?.connect()
+    auroraRef.value?.connect()
+    blobRef.value?.connect()
   }
 }
 </script>
@@ -66,9 +94,9 @@ function toggleConnection() {
         </template>
         <button
           class="connect-btn"
-          :class="{ 'disconnect-btn': fftRef?.isConnected }"
+          :class="{ 'disconnect-btn': anyConnected }"
           @click="toggleConnection"
-        >{{ fftRef?.isConnected ? 'Disconnect' : 'Connect' }}</button>
+        >{{ anyConnected ? 'Disconnect' : 'Connect' }}</button>
       </div>
     </header>
 
@@ -150,6 +178,126 @@ function toggleConnection() {
         </select>
       </div>
     </div>
+
+    <h2 class="section-title">Aurora Borealis</h2>
+
+    <div ref="auroraContainer" class="visualizer-container aurora-container">
+      <AuroraVisualizer
+        ref="auroraRef"
+        :mode="mode"
+        :websocket-url="wsUrl"
+        :intensity="auroraIntensity"
+        :speed="auroraSpeed"
+        :palette="auroraPalette"
+        :layers="auroraLayers"
+        :auto-speed="auroraAutoSpeed"
+        :auto-layers="auroraAutoLayers"
+      />
+    </div>
+    <button class="fullscreen-btn" @click="toggleFullscreen(auroraContainer)">
+      <svg v-if="fullscreenEl !== auroraContainer" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6v6m10-10h-6V4m0 6l7-7M3 21l7-7"/></svg>
+      {{ fullscreenEl === auroraContainer ? 'Exit Fullscreen' : 'Fullscreen' }}
+    </button>
+
+    <div class="controls">
+      <div class="control-group">
+        <label>Intensity: {{ auroraIntensity.toFixed(2) }}</label>
+        <input type="range" v-model.number="auroraIntensity" min="0.2" max="1.5" step="0.05" />
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" v-model="auroraAutoSpeed" />
+          Auto Speed
+        </label>
+        <template v-if="!auroraAutoSpeed">
+          <input type="range" v-model.number="auroraSpeed" min="0.2" max="3" step="0.1" />
+          <span>{{ auroraSpeed.toFixed(1) }}</span>
+        </template>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" v-model="auroraAutoLayers" />
+          Auto Layers
+        </label>
+        <template v-if="!auroraAutoLayers">
+          <input type="range" v-model.number="auroraLayers" min="1" max="6" step="1" />
+          <span>{{ auroraLayers }}</span>
+        </template>
+      </div>
+
+      <div class="control-group">
+        <label>Palette</label>
+        <select v-model="auroraPalette">
+          <option value="classic">Classic</option>
+          <option value="warm">Warm</option>
+          <option value="cool">Cool</option>
+          <option value="rainbow">Rainbow</option>
+        </select>
+      </div>
+    </div>
+
+    <h2 class="section-title">Organic Blob</h2>
+
+    <div ref="blobContainer" class="visualizer-container blob-container">
+      <BlobVisualizer
+        ref="blobRef"
+        :mode="mode"
+        :websocket-url="wsUrl"
+        :speed="blobSpeed"
+        :noise-strength="blobNoiseStrength"
+        :noise-density="blobNoiseDensity"
+        :hue="blobHue"
+        :palette="blobPalette"
+        :auto-reactive="blobAutoReactive"
+      />
+    </div>
+    <button class="fullscreen-btn" @click="toggleFullscreen(blobContainer)">
+      <svg v-if="fullscreenEl !== blobContainer" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 14h6v6m10-10h-6V4m0 6l7-7M3 21l7-7"/></svg>
+      {{ fullscreenEl === blobContainer ? 'Exit Fullscreen' : 'Fullscreen' }}
+    </button>
+
+    <div class="controls">
+      <div class="control-group">
+        <label>Speed: {{ blobSpeed.toFixed(2) }}</label>
+        <input type="range" v-model.number="blobSpeed" min="0.05" max="1.0" step="0.05" />
+      </div>
+
+      <div class="control-group">
+        <label>Noise: {{ blobNoiseStrength.toFixed(2) }}</label>
+        <input type="range" v-model.number="blobNoiseStrength" min="0.05" max="0.6" step="0.05" />
+      </div>
+
+      <div class="control-group">
+        <label>Density: {{ blobNoiseDensity.toFixed(1) }}</label>
+        <input type="range" v-model.number="blobNoiseDensity" min="0.5" max="4.0" step="0.1" />
+      </div>
+
+      <div class="control-group">
+        <label>Hue: {{ blobHue.toFixed(2) }}</label>
+        <input type="range" v-model.number="blobHue" min="0" max="1" step="0.05" />
+      </div>
+
+      <div class="control-group">
+        <label>Palette</label>
+        <select v-model="blobPalette">
+          <option value="rainbow">Rainbow</option>
+          <option value="warm">Warm</option>
+          <option value="cool">Cool</option>
+          <option value="electric">Electric</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" v-model="blobAutoReactive" />
+          Audio Reactive
+        </label>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -188,6 +336,21 @@ h1 {
 .visualizer-container:fullscreen {
   height: 100%;
   border-radius: 0;
+}
+
+.aurora-container {
+  height: 100vh;
+}
+
+.blob-container {
+  height: 80vh;
+}
+
+.section-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 1rem;
 }
 
 .controls {
