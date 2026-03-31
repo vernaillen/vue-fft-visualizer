@@ -11,6 +11,7 @@ const smoothing = ref(0.5)
 const peakDecay = ref(0.99)
 const gradient = ref<'classic' | 'rainbow' | 'blue'>('rainbow')
 const gradientDirection = ref<'vertical' | 'horizontal'>('horizontal')
+const stereo = ref(true)
 
 // Mode & WebSocket URL
 const mode = ref<'websocket' | 'local'>('local')
@@ -116,6 +117,7 @@ async function onDeviceChange() {
         :peak-decay="peakDecay"
         :gradient="gradient"
         :gradient-direction="gradientDirection"
+        :stereo="stereo"
       />
     </div>
     <button class="fullscreen-btn" @click="toggleFullscreen(fftContainer)">
@@ -146,6 +148,13 @@ async function onDeviceChange() {
         <label>
           <input type="checkbox" v-model="showPeaks" />
           Show Peaks
+        </label>
+      </div>
+
+      <div class="control-group">
+        <label>
+          <input type="checkbox" v-model="stereo" />
+          Stereo
         </label>
       </div>
 
