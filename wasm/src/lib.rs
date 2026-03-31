@@ -146,7 +146,7 @@ impl FftProcessor {
             // Convert to dB and normalize to 0-255
             let db = 20.0 * (weighted + 1e-10).log10();
             let min_db = -85.0_f32;
-            let max_db = -25.0_f32;
+            let max_db = -10.0_f32;
             let normalized = (db - min_db) / (max_db - min_db);
             result[i] = (normalized.clamp(0.0, 1.0) * 255.0) as u8;
         }
