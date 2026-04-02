@@ -396,12 +396,13 @@ function createShader(glCtx: WebGLRenderingContext, type: number, source: string
   return shader
 }
 
-function createTexture(glCtx: WebGLRenderingContext): WebGLTexture | null {
+function createTexture(glCtx: WebGLRenderingContext, nearest = false): WebGLTexture | null {
   const texture = glCtx.createTexture()
   if (!texture) return null
+  const filter = nearest ? glCtx.NEAREST : glCtx.LINEAR
   glCtx.bindTexture(glCtx.TEXTURE_2D, texture)
-  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_MIN_FILTER, glCtx.LINEAR)
-  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_MAG_FILTER, glCtx.LINEAR)
+  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_MIN_FILTER, filter)
+  glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_MAG_FILTER, filter)
   glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_WRAP_S, glCtx.CLAMP_TO_EDGE)
   glCtx.texParameteri(glCtx.TEXTURE_2D, glCtx.TEXTURE_WRAP_T, glCtx.CLAMP_TO_EDGE)
   return texture
@@ -476,11 +477,11 @@ function initWebGL(): boolean {
   gl.activeTexture(gl.TEXTURE0)
   fftTexture = createTexture(gl)
   gl.activeTexture(gl.TEXTURE1)
-  peakTexture = createTexture(gl)
+  peakTexture = createTexture(gl, true)
   gl.activeTexture(gl.TEXTURE2)
   fftTextureRight = createTexture(gl)
   gl.activeTexture(gl.TEXTURE3)
-  peakTextureRight = createTexture(gl)
+  peakTextureRight = createTexture(gl, true)
 
   // Set texture units
   gl.uniform1i(uFftDataLoc, 0)

@@ -6,9 +6,9 @@ import { FFTVisualizer } from '../src'
 const bands = ref<10 | 20 | 40 | 80>(40)
 const ledBars = ref(false)
 const showPeaks = ref(true)
-const noiseFloor = ref(60)
+const noiseFloor = ref(0)
 const smoothing = ref(0.5)
-const peakDecay = ref(0.99)
+const peakDecay = ref(0.89)
 const gradient = ref<'classic' | 'rainbow' | 'blue'>('rainbow')
 const gradientDirection = ref<'vertical' | 'horizontal'>('horizontal')
 const stereo = ref(true)
@@ -170,7 +170,7 @@ async function onDeviceChange() {
 
       <div class="control-group">
         <label>Peak Drop: {{ peakDecay.toFixed(3) }}</label>
-        <input type="range" v-model.number="peakDecay" min="0.9" max="0.999" step="0.001" />
+        <input type="range" v-model.number="peakDecay" min="0.8" max="0.999" step="0.001" />
       </div>
 
       <div class="control-group">
