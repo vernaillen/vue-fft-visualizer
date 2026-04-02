@@ -262,6 +262,13 @@ const fragmentShaderSource = `
     float texCoord = (barIndex + 0.5) / u_bins;
 
     if (u_stereo) {
+      // Thin black divider line between left and right channels
+      float dividerHalf = 1.0 / u_resolution.y;
+      if (abs(uv.y - 0.5) < dividerHalf) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+      }
+
       // Stereo mode: left channel grows up from center, right channel grows down from center
       float fftLeft = texture2D(u_fftData, vec2(texCoord, 0.5)).r;
       float peakLeft = texture2D(u_peakData, vec2(texCoord, 0.5)).r;
