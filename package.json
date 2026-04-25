@@ -26,7 +26,8 @@
     "build": "vue-tsc && vite build",
     "build:playground": "vue-tsc && vite build --mode playground",
     "preview": "vite preview",
-    "typecheck": "vue-tsc --noEmit"
+    "typecheck": "vue-tsc --noEmit",
+    "prepack": "pnpm build:wasm && pnpm build"
   },
   "peerDependencies": {
     "vue": "^3.4.0"
@@ -55,11 +56,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wvernaillen/vue-fft-visualizer.git"
+    "url": "git+https://github.com/vernaillen/vue-fft-visualizer.git"
   },
   "bugs": {
-    "url": "https://github.com/wvernaillen/vue-fft-visualizer/issues"
+    "url": "https://github.com/vernaillen/vue-fft-visualizer/issues"
   },
-  "homepage": "https://github.com/wvernaillen/vue-fft-visualizer#readme",
+  "homepage": "https://github.com/vernaillen/vue-fft-visualizer#readme",
   "packageManager": "pnpm@10.28.0+sha256.9b0b04e6e79945566917f8411bb6f65fd2f3e1590426904e8500e1acc4b33561"
 }
