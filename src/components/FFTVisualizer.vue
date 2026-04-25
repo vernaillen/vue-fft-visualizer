@@ -253,7 +253,8 @@ const fragmentShaderSource = `
 
     // Gap between bars (25% of bar width)
     float gap = 0.25;
-    if (barLocalX > (1.0 - gap)) {
+    bool inGap = barLocalX > (1.0 - gap);
+    if (inGap) {
       gl_FragColor = bgColor;
       return;
     }
@@ -814,6 +815,11 @@ watch(() => props.bands, (newBands) => {
 // Watch local audio FFT data and feed into processing pipeline
 watch(localAudio.fftData, (newData) => {
   if (props.mode !== 'local' || !localAudio.isActive.value) return
+
+  if (newData.length !== serverBins.value) {
+    initBuffers(newData.length)
+  }
+
   processMonoData(new Uint8Array(newData))
 })
 
