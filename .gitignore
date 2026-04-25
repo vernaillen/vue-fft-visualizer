@@ -31,3 +31,4 @@ backend-examples/rust/target/
 backend-examples/rust/Cargo.lock
 wasm/target/
 wasm/Cargo.lock
+VISUALIZATION-IDEAS.md
